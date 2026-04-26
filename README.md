@@ -112,22 +112,30 @@ Based on the [HPD-Agent paper](./HPD-Agent.md).
 
 ```
 src/
+├── __init__.py
+├── main.py                      # CLI entry point (REPL loop)
+├── run.py                       # direct runner (alternative entry)
 ├── agents/
 │   ├── __init__.py
-│   └── coordinator_agent.py     # coordinator node (LLM planning)
+│   ├── coordinator_agent.py     # coordinator node (LLM planning)
+│   ├── expert_agent.py          # expert agent for hard sub-tasks
+│   └── query_agent.py           # query agent
 ├── commands/
 │   ├── __init__.py              # command registry & dispatcher
 │   ├── details.py               # help text for all commands
 │   └── handlers/
+│       ├── __init__.py
 │       ├── context_cmd.py        # /context
 │       ├── exit.py              # /exit
 │       ├── help.py              # /help
+│       ├── love.py              # easter egg
 │       ├── model_cmd.py         # /model (list/create/switch profiles)
 │       ├── new_session.py       # /new
 │       ├── sessions.py          # /sessions
 │       ├── summary.py           # /summary
 │       └── tokens.py            # /tokens
 ├── core/
+│   ├── __init__.py
 │   ├── enums.py                 # TaskDifficulty enum
 │   ├── models.py                # all Pydantic data models
 │   └── state.py                 # AgentState TypedDict
@@ -151,10 +159,12 @@ src/
 │   ├── scheduler.py             # Kahn's algorithm + asyncio.gather parallel runner
 │   ├── scheduler_node.py        # graph node wrapper around scheduler
 │   └── synthesizer.py           # synthesis prompt builder
-├── workflow/
+├── tools/
 │   ├── __init__.py
-│   └── builder.py               # LangGraph StateGraph assembly
-└── main.py                      # CLI entry point (REPL loop)
+│   └── registry.py              # tool registry & tool-calling
+└── workflow/
+    ├── __init__.py
+    └── builder.py               # LangGraph StateGraph assembly
 ```
 
 ---

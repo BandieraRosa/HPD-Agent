@@ -108,22 +108,30 @@ answer     (DAG 规划)
 
 ```
 src/
+├── __init__.py
+├── main.py                      # CLI 入口（REPL 循环）
+├── run.py                       # 直接运行入口（备选入口点）
 ├── agents/
 │   ├── __init__.py
-│   └── coordinator_agent.py     # coordinator 节点（LLM 规划）
+│   ├── coordinator_agent.py     # coordinator 节点（LLM 规划）
+│   ├── expert_agent.py          # 针对 hard 子任务的专家智能体
+│   └── query_agent.py           # 查询智能体
 ├── commands/
 │   ├── __init__.py              # 命令注册与分发
 │   ├── details.py               # 所有命令的帮助文本
 │   └── handlers/
+│       ├── __init__.py
 │       ├── context_cmd.py        # /context
 │       ├── exit.py              # /exit
 │       ├── help.py              # /help
+│       ├── love.py              # 彩蛋
 │       ├── model_cmd.py         # /model（列表/创建/切换模型配置）
 │       ├── new_session.py       # /new
 │       ├── sessions.py          # /sessions
 │       ├── summary.py           # /summary
 │       └── tokens.py            # /tokens
 ├── core/
+│   ├── __init__.py
 │   ├── enums.py                 # TaskDifficulty 枚举
 │   ├── models.py                # 所有 Pydantic 数据模型
 │   └── state.py                 # AgentState TypedDict
@@ -147,10 +155,12 @@ src/
 │   ├── scheduler.py             # Kahn 算法 + asyncio.gather 并行运行器
 │   ├── scheduler_node.py        # scheduler 的图节点封装
 │   └── synthesizer.py            # 综合 prompt 构建器
-├── workflow/
+├── tools/
 │   ├── __init__.py
-│   └── builder.py               # LangGraph StateGraph 组装
-└── main.py                      # CLI 入口（REPL 循环）
+│   └── registry.py              # 工具注册与工具调用
+└── workflow/
+    ├── __init__.py
+    └── builder.py               # LangGraph StateGraph 组装
 ```
 
 ---
