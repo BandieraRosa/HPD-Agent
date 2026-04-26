@@ -6,7 +6,7 @@ from src.agents import QueryAgent
 from src.memory.context import ConversationContext
 
 
-MAX_TOKENS = 10_000
+MAX_TOKENS = 700_000
 
 
 def _load_encoder():

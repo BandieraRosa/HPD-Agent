@@ -19,7 +19,7 @@ from src.llm import (
     SUB_TASK_ASSESSMENT_PROMPT,
     SUB_TASK_PROMPT,
 )
-from src.tools import read_file
+from src.tools import tool_list
 
 
 def _extract_summary(detail: str) -> str:
@@ -64,14 +64,20 @@ async def execute(task_id: int, task_name: str, context: str) -> SubTaskOutput:
     )
     full_content, tool_log = await invoke_with_tools(
         prompt,
-        tools=[read_file],
+        tools=tool_list,
     )
     content = full_content or ""
+
+    # Include tool results in the detail so they feed into downstream task contexts
+    if tool_log and tool_log.strip():
+        detail = f"{content}\n\n[工具执行记录]\n{tool_log}"
+    else:
+        detail = content
 
     return SubTaskOutput(
         id=task_id,
         name=task_name,
-        detail=content,
-        summary=_extract_summary(content),
+        detail=detail,
+        summary=_extract_summary(detail),
         expert_mode=is_expert,
     )

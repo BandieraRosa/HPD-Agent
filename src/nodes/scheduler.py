@@ -59,6 +59,16 @@ async def run_all(
     running: set[int] = set()
     total = len(tasks)
 
+    # Build task map for name lookups in downstream context
+    task_map: dict[int, SubTask] = {}
+    for t in tasks:
+        task_map[t.id] = t
+
+    # Cache for completed task outputs (detail + summary).
+    completed_cache: dict[int, dict] = {}
+    # Brief audit trail: original question + one-line summary per completed task.
+    accumulated_context = context
+
     _print_progress(0, total)
 
     while len(done) < total:
@@ -72,12 +82,47 @@ async def run_all(
         ready_tasks = [t for t in tasks if t.id in ready_ids]
         running.update(ready_ids)
 
+        # Collect the transitive closure of completed dependencies for each task.
+        # BFS in topological order ensures every upstream result appears exactly once,
+        # even across multiple levels of the DAG.  This is critical for diamond
+        # shapes (e.g. 4 depends on 2+3, and 2+3 both depend on 1 — task 4 must
+        # see task 1's result too, not just tasks 2 and 3).
+        dep_results: list[str] = []
+        for task in ready_tasks:
+            if task.depends:
+                seen: set[int] = set()
+                queue: list[int] = list(task.depends)
+                while queue:
+                    dep_id = queue.pop(0)
+                    if dep_id in seen or dep_id not in completed_cache:
+                        continue
+                    seen.add(dep_id)
+                    c = completed_cache[dep_id]
+                    dep_results.append(
+                        f"[子任务 {dep_id} ({task_map[dep_id].name}) 结果]\n{c['detail'][:2000]}"
+                    )
+                    # Add transitive deps (not yet in seen, not yet queued)
+                    for transitively_dep in task_map[dep_id].depends:
+                        if transitively_dep not in seen and transitively_dep not in queue:
+                            queue.append(transitively_dep)
+
+        dep_block = "\n\n".join(dep_results)
+
+        task_contexts: dict[int, str] = {}
+        for task in ready_tasks:
+            task_contexts[task.id] = (
+                f"{accumulated_context}\n\n"
+                f"【已完成依赖任务结果】（共 {len(dep_results)} 个）\n{dep_block}"
+                if dep_results
+                else accumulated_context
+            )
+
         results = await asyncio.gather(
             *[
                 _run_with_retry(
                     task,
                     executor,
-                    context,
+                    task_contexts[task.id],
                     retry,
                     statuses,
                 )
@@ -105,9 +150,10 @@ async def run_all(
             else:
                 statuses[task.id] = "done"
                 done.append(res)
+                # Cache for downstream tasks
+                completed_cache[task.id] = {"detail": res.detail, "summary": res.summary}
                 with _print_lock:
                     print(f"[Scheduler] ✓ 子任务 {task.id}: {task.name}")
-                    # print(f"             → {res.detail}")
                     print(f"             → {res.summary}")
 
         for task in ready_tasks:
@@ -115,6 +161,14 @@ async def run_all(
             for t in tasks:
                 if task.id in t.depends:
                     in_degree[t.id] -= 1
+
+        # Update accumulated context with summaries of this layer (not full details,
+        # to avoid compounding duplication when task details already embed context).
+        for task in ready_tasks:
+            if task.id in completed_cache:
+                accumulated_context += (
+                    f"\n\n[子任务 {task.id} ({task.name})]\n{completed_cache[task.id]['summary']}"
+                )
 
         _print_progress(len(done), total)
 

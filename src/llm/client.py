@@ -11,6 +11,14 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
+_seen_tool_call_ids: set[str] = set()
+"""Track which tool_call IDs have already been executed to prevent duplicate calls."""
+
+
+def _reset_seen_tool_call_ids() -> None:
+    """Reset the seen call-ID set before a new invoke_with_tools session."""
+    _seen_tool_call_ids.clear()
+
 
 def _resolve_api_key(profile_key: str) -> str:
     """Prefer the per-profile key; fall back to the legacy env var."""
@@ -107,6 +115,7 @@ async def invoke_with_tools(
         (final_text, tool_calls_log) — the LLM's final text response and a
         concatenated string of all tool results for context.
     """
+    _reset_seen_tool_call_ids()
     llm = get_llm_with_tools(
         model=model, temperature=temperature, base_url=base_url,
         tools=tools, stream=stream,
@@ -127,6 +136,7 @@ async def invoke_with_tools(
             break
 
         for call in tool_calls:
+            call_id = call.get("id", "")
             name = call.get("name") or ""
             args = call.get("args") or {}
             tool = None
@@ -137,10 +147,45 @@ async def invoke_with_tools(
                         break
             if tool is None:
                 result = f"[Error] Tool '{name}' not found"
+                print(f"[DEBUG] Tool '{name}' not found")
+            elif call_id in _seen_tool_call_ids:
+                result = (
+                    f"[Error] Duplicate tool call detected for '{name}' "
+                    f"with id={call_id}. This operation was previously "
+                    f"cancelled or failed. Do not retry the same action."
+                )
+                print(f"[DEBUG] Tool '{name}' duplicate call ignored (id={call_id})")
+                break
             else:
-                result = tool.invoke(args)
+                _seen_tool_call_ids.add(call_id)
+                if name == "terminal":
+                    cmd = args.get("cmd", "")
+                    print(f"[DEBUG] Tool '{name}' → terminal command: {cmd}")
+                    safe_prefixes = (
+                        "pwd", "ls", "cat", "echo", "date", "whoami",
+                        "head", "tail", "less", "file ", "stat ",
+                        "uname", "id", "hostname", "env", "printenv",
+                    )
+                    if cmd.strip().startswith(safe_prefixes) or cmd.strip().startswith("cd "):
+                        result = tool.invoke(args)
+                        success = not str(result).startswith("[Error]")
+                        print(f"[DEBUG] Tool '{name}' succeeded (safe command)")
+                    else:
+                        confirm = input("    Confirm execution? (y/N): ").strip().lower()
+                        if confirm != "y":
+                            result = "[Cancelled] User declined to execute the terminal command"
+                            print(f"[DEBUG] Tool '{name}' cancelled by user")
+                        else:
+                            result = tool.invoke(args)
+                            success = not str(result).startswith("[Error]") and not str(result).startswith("[Cancelled]")
+                            print(f"[DEBUG] Tool '{name}' {'succeeded' if success else 'failed'}")
+                else:
+                    print(f"[DEBUG] Tool '{name}' called")
+                    result = tool.invoke(args)
+                    success = not str(result).startswith("[Error]")
+                    print(f"[DEBUG] Tool '{name}' {'succeeded' if success else 'failed'}")
             messages.append(AIMessage(content="", tool_calls=[call]))
-            messages.append(ToolMessage(name=name, content=str(result), tool_call_id=call.get("id", "")))
+            messages.append(ToolMessage(name=name, content=str(result), tool_call_id=call_id))
             tool_results.append(f"[Tool: {name}]\n{result}")
 
     return full_content, "\n\n".join(tool_results)
