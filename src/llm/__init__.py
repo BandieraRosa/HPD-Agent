@@ -1,4 +1,4 @@
-from .client import get_llm, get_structured_llm
+from .client import get_llm, get_structured_llm, get_llm_with_tools, invoke_with_tools
 from .prompts import (
     ASSESSMENT_PROMPT,
     DIRECT_ANSWER_PROMPT,
@@ -10,6 +10,8 @@ from .prompts import (
 __all__ = [
     "get_llm",
     "get_structured_llm",
+    "get_llm_with_tools",
+    "invoke_with_tools",
     "ASSESSMENT_PROMPT",
     "DIRECT_ANSWER_PROMPT",
     "PLANNER_PROMPT",

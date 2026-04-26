@@ -1,10 +1,11 @@
 from src.core.models import TaskOutput
 from src.core.state import AgentState
-from src.llm import get_llm, DIRECT_ANSWER_PROMPT
+from src.llm import get_llm, invoke_with_tools, DIRECT_ANSWER_PROMPT
+from src.tools import read_file
 
 
 async def direct_answer(state: AgentState) -> AgentState:
-    """Handle simple tasks: stream response chunks directly to stdout."""
+    """Handle simple tasks with optional tool-calling (e.g. read_file)."""
     print()
 
     history = state.get("conversation_history")
@@ -25,16 +26,23 @@ async def direct_answer(state: AgentState) -> AgentState:
 
     llm = get_llm(stream=True)
     full_content = ""
+    tool_calls_log = ""
+    tool_used = False
 
-    async for chunk in llm.astream(prompt):
-        t = getattr(chunk, "content", "") or ""
-        if t:
-            print(t, end="", flush=True)
-            full_content += t
+    result = await invoke_with_tools(
+        prompt,
+        tools=[read_file],
+    )
+    full_content, tool_calls_log = result
+
+    if full_content:
+        print(full_content)
+    if tool_calls_log:
+        print(f"\n[Tool results logged: {len(tool_calls_log)} chars]")
 
     output = TaskOutput(
         node="direct_answer",
-        result={"content": full_content},
+        result={"content": full_content, "tool_calls": tool_calls_log},
     )
 
     return {

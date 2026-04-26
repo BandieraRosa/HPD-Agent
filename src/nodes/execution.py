@@ -14,11 +14,12 @@ import re
 from src.core.enums import SubTaskDifficulty
 from src.core.models import SubTaskAssessmentResult, SubTaskOutput
 from src.llm import (
-    get_llm,
+    invoke_with_tools,
     get_structured_llm,
     SUB_TASK_ASSESSMENT_PROMPT,
     SUB_TASK_PROMPT,
 )
+from src.tools import read_file
 
 
 def _extract_summary(detail: str) -> str:
@@ -57,13 +58,15 @@ async def execute(task_id: int, task_name: str, context: str) -> SubTaskOutput:
     )
     is_expert = assessment.difficulty == SubTaskDifficulty.HARD
 
-    # Step 2: Execution via LLM
-    llm = get_llm()
+    # Step 2: Execution via LLM with tool support
     prompt = SUB_TASK_PROMPT.format(
         context=context, task_id=task_id, task_name=task_name
     )
-    response = await llm.ainvoke(prompt)
-    content = getattr(response, "content", "") or str(response)
+    full_content, tool_log = await invoke_with_tools(
+        prompt,
+        tools=[read_file],
+    )
+    content = full_content or ""
 
     return SubTaskOutput(
         id=task_id,
