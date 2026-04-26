@@ -167,7 +167,7 @@ src/
 | `/model`                 | List all saved LLM profiles                                                |
 | `/model create`          | Interactively create a new model profile                                   |
 | `/model <name>`          | Switch to a saved model                                                    |
-| `/context [-d] [-N | *]` | View context window ( `-d`: full content, `*`: all, `-N`: last N messages) |
+| `/context [-d] [-N]`     | View context window ( `-d`: full content, `*`: all, `-N`: last N messages) |
 | `/new`                   | Start a new conversation session                                           |
 | `/sessions [id]`         | List sessions or switch to one                                             |
 | `/summary`               | Summarize context window and clear messages                                |
