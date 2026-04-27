@@ -24,6 +24,12 @@ class Message(BaseModel):
         description="Clean answer shown to the user. "
         "Only set for assistant messages; None means use content as fallback."
     )
+    tool_summary: str | None = Field(
+        default=None,
+        description="Concise summary of tool calls made during this assistant turn "
+        "(e.g. 'read_file: /path/to/file, terminal: cat config'). "
+        "Included in summaries so downstream context doesn't lose tool usage info."
+    )
     timestamp: datetime = Field(
         default_factory=datetime.now,
         description="When this message was recorded.",
@@ -47,6 +53,16 @@ class ConversationContext(BaseModel):
         description="Maximum number of turns to retain in the rolling window.",
     )
 
+    sub_task_outputs: list[dict] = Field(
+        default_factory=list,
+        description="All completed sub-task outputs (id, name, detail, summary, "
+        "tools_used, key_findings, expert_mode). Used to track token cost of DAG results "
+        "that are NOT stored in messages but DO consume context window in the synthesizer.",
+    )
+    """Accumulated sub-task outputs — tracked separately from messages because the
+    synthesizer reads them from state (not from conversation_history), but they still
+    consume the LLM context window when synthesizing the final answer."""
+
     def add_user_message(self, content: str) -> None:
         """Append a user message and trim to max_turns."""
         self.messages.append(
@@ -58,18 +74,21 @@ class ConversationContext(BaseModel):
         self,
         content: str,
         answer_content: str | None = None,
+        tool_summary: str | None = None,
     ) -> None:
         """Append an assistant message and trim to max_turns.
 
         Args:
             content: Full internal content (sub-task results, synthesis prompts, etc.).
             answer_content: Clean user-facing answer. If None, content is used for display.
+            tool_summary: Concise summary of tool calls made (e.g. 'read_file: /path/to/file').
         """
         self.messages.append(
             Message(
                 role=MessageRole.ASSISTANT,
                 content=content,
                 answer_content=answer_content,
+                tool_summary=tool_summary,
             )
         )
         self._trim()
@@ -83,7 +102,8 @@ class ConversationContext(BaseModel):
         """Render conversation history as a readable string for prompt injection.
 
         Assistant messages show their clean answer (answer_content) when available,
-        falling back to full internal content.
+        falling back to full internal content.  Tool summaries are included as a
+        separate block so important file/resource operations are not lost.
         """
         if not self.messages:
             return ""
@@ -92,4 +112,27 @@ class ConversationContext(BaseModel):
             prefix = "用户" if msg.role == MessageRole.USER else "助手"
             text = msg.answer_content if msg.answer_content else msg.content
             lines.append(f"{prefix}: {text}")
+            if msg.tool_summary:
+                lines.append(f"  [工具记录] {msg.tool_summary}")
+        return "\n".join(lines)
+
+    def to_sub_tasks_summary(self) -> str:
+        """Render accumulated sub-task outputs as a readable string for prompt injection.
+
+        Each sub-task is formatted as its summary (key finding) along with its name
+        and the tools it used, so the next session retains the important conclusions
+        without carrying the full reasoning detail.
+        """
+        if not self.sub_task_outputs:
+            return ""
+        lines = []
+        for output in self.sub_task_outputs:
+            lines.append(
+                f"子任务{output['id']}: {output['name']}"
+                + (f" [expert模式]" if output.get("expert_mode") else "")
+            )
+            if output.get("summary"):
+                lines.append(f"  摘要: {output['summary']}")
+            if output.get("tools_used"):
+                lines.append(f"  工具: {', '.join(output['tools_used'])}")
         return "\n".join(lines)

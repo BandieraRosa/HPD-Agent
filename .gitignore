@@ -67,3 +67,4 @@ env/
 # Cursor
 .codex/
 test_scheduler_context.py
+.analysis/

@@ -1,4 +1,15 @@
-"""Handler for the /tokens command — shows context window token usage."""
+"""Handler for the /tokens command — shows context window token usage.
+
+Token accounting follows the actual LLM context payload consumed in the synthesizer:
+  1. conversation_history (messages)           ← always counted
+  2. sub_task_outputs (accumulated DAG results) ← not stored in messages, but
+     consumed by the synthesizer when building the final answer
+  3. current synthesis prompt (if building)    ← the in-flight prompt
+
+System prompts (assessment, planner, synthesis instructions) are NOT counted as
+part of the rolling context window — they are injected per-call and not
+persisted.  Only the accumulating conversation state is tracked here.
+"""
 
 import concurrent.futures
 
@@ -6,7 +17,8 @@ from src.agents import QueryAgent
 from src.memory.context import ConversationContext
 
 
-MAX_TOKENS = 700_000
+# cl100k_base context window for the model (conservative: 128k for deepseek-v4)
+MAX_TOKENS = 128_000
 
 
 def _load_encoder():
@@ -33,7 +45,10 @@ def _count_tokens(text: str) -> int:
 
 
 def _count_context_tokens(ctx: ConversationContext) -> int:
-    """Count total tokens across all messages in the context."""
+    """Count tokens for the rolling conversation_history (messages only).
+
+    Each message is formatted as "{role}: {content}" per langchain convention.
+    """
     enc = _get_encoder()
     total = 0
     for msg in ctx.messages:
@@ -42,31 +57,67 @@ def _count_context_tokens(ctx: ConversationContext) -> int:
     return total
 
 
+def get_used_tokens(agent: QueryAgent) -> int:
+    """Get the total tokens consumed by the current session's rolling context.
+
+    This is the real token cost — it includes:
+      - All messages in conversation_history (what's actually sent to the LLM)
+      - All accumulated sub_task_outputs (consumed by the synthesizer but not
+        stored in messages, so invisible to the message-only counter)
+    """
+    ctx = agent._get_context()
+    total = _count_context_tokens(ctx)
+
+    # Sub-task outputs are accumulated by QueryAgent and fed to the synthesizer,
+    # but they are NOT stored in messages — they still consume the context window.
+    for output in ctx.sub_task_outputs:
+        total += _count_tokens(f"[子任务 {output['id']}: {output['name']}]\n{output['detail']}")
+
+    return total
+
+
 def _format_bar(pct: float, width: int = 20) -> str:
     """Render a simple text progress bar."""
     filled = int(pct * width)
     return "[" + "=" * filled + " " * (width - filled) + "]"
 
-def get_used_tokens(agent: QueryAgent) -> int:
-    """Get the number of used tokens in the current session."""
-    ctx = agent._get_context()
-    return _count_context_tokens(ctx)
 
 def run(raw: str, agent: QueryAgent) -> bool:
     """Handle /tokens command — print context window token usage."""
     ctx = agent._get_context()
-    total = _count_context_tokens(ctx)
+
+    # Count messages
+    msg_tokens = _count_context_tokens(ctx)
+
+    # Count sub-task outputs
+    sub_task_tokens = 0
+    for output in ctx.sub_task_outputs:
+        sub_task_tokens += _count_tokens(
+            f"[子任务 {output['id']}: {output['name']}]\n{output['detail']}"
+        )
+
+    # Count tool summaries (informational — already included in messages)
+    tool_tokens = 0
+    for msg in ctx.messages:
+        if msg.tool_summary:
+            tool_tokens += _count_tokens(msg.tool_summary)
+
+    total = msg_tokens + sub_task_tokens
 
     pct = min(total / MAX_TOKENS, 1.0)
     bar = _format_bar(pct)
 
     print(f"=== Context Token Usage ===")
-    print(f"  Used:      {total:>6} tokens")
-    print(f"  Max:       {MAX_TOKENS:>6} tokens")
-    print(f"  Usage:     {bar} {pct * 100:.1f}%")
+    print(f"  Conversation history:  {msg_tokens:>6} tokens  (messages)")
+    print(f"  Sub-task results:     {sub_task_tokens:>6} tokens  (DAG outputs, not in messages)")
+    print(f"  Total:                {total:>6} tokens")
+    print(f"  Model window:        {MAX_TOKENS:>6} tokens")
+    print(f"  Usage:              {bar} {pct * 100:.1f}%")
+    if tool_tokens > 0:
+        print(f"  (tool summaries:      {tool_tokens:>6} tokens — included above)")
     print()
 
     if total >= MAX_TOKENS:
-        print("  [WARNING] 上下文窗口已满，请开启新对话")
+        print("  [WARNING] 上下文窗口已满，请开启新对话或使用 /summary 总结上下文")
 
     return False

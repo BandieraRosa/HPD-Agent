@@ -131,7 +131,7 @@ async def run_loop():
         print()
 
         tokens = get_used_tokens(agent)
-        if(tokens > MAX_TOKENS):
+        if tokens > MAX_TOKENS:
             print("Token limit reached. Please create a new conversation or run /summary to summarize the conversation.")
             continue
         result = await agent.ainvoke(query, agent._current_session)

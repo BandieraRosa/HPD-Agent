@@ -1,4 +1,5 @@
 import asyncio
+import re
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
@@ -30,6 +31,43 @@ class QueryAgent:
             self._contexts[sid] = ConversationContext()
         return self._contexts[sid]
 
+    def _extract_tool_summary(self, synthesis_prompt: str) -> str:
+        """Parse tool names and paths from a synthesis prompt's tool log section.
+
+        The synthesis prompt contains tool results in the form:
+          [Tool: tool_name]\nresult
+          [Tool: read_file(path='/...')]\ncontent
+          [Tool: terminal(cmd='cat /...')]\noutput
+
+        We extract unique (tool_name, path/cmd) pairs for the tool_summary field.
+        """
+        seen: set[str] = set()
+        parts: list[str] = []
+
+        # Pattern: [Tool: name(args)]\n or [Tool: name]\n
+        for match in re.finditer(r"\[Tool:\s*(\w+)(?:\([^)]*\))?\]", synthesis_prompt):
+            key = match.group(1)
+            if key not in seen:
+                seen.add(key)
+                parts.append(key)
+
+        # Also capture specific paths from read_file(path='...') and terminal(cmd='...')
+        for match in re.finditer(r"read_file\s*\([^'\"]*['\"]([^'\"]+)['\"]", synthesis_prompt):
+            path = match.group(1).strip()
+            key = f"read_file: {path}"
+            if key not in seen:
+                seen.add(key)
+                parts.append(key)
+
+        for match in re.finditer(r"terminal\s*\(\s*cmd\s*=\s*'([^']+)'", synthesis_prompt):
+            cmd = match.group(1).strip()
+            key = f"terminal: {cmd}"
+            if key not in seen:
+                seen.add(key)
+                parts.append(key)
+
+        return ", ".join(parts) if parts else ""
+
     async def ainvoke(self, query: str, thread_id: str | None = None) -> AgentState:
         """Run the graph and return the final state.
 
@@ -58,10 +96,27 @@ class QueryAgent:
 
         synthesis = result.get("synthesis_prompt", "")
         final_text = result.get("final_response") or synthesis
+
+        # Track sub-task outputs for token accounting (not stored in messages,
+        # but consumed by the synthesizer's final LLM call)
+        outputs = result.get("sub_task_outputs", [])
+        for o in outputs:
+            o_dict = {
+                "id": o.id,
+                "name": o.name,
+                "detail": o.detail,
+                "summary": o.summary,
+                "tools_used": o.tools_used,
+                "expert_mode": o.expert_mode,
+            }
+            ctx.sub_task_outputs.append(o_dict)
+
+        tool_summary = self._extract_tool_summary(synthesis) if synthesis else ""
         if final_text:
             ctx.add_assistant_message(
                 content=synthesis if synthesis else final_text,
                 answer_content=final_text[:5000] if synthesis else None,
+                tool_summary=tool_summary or None,
             )
 
         return result

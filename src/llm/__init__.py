@@ -5,6 +5,7 @@ from .prompts import (
     PLANNER_PROMPT,
     SUB_TASK_PROMPT,
     SUB_TASK_ASSESSMENT_PROMPT,
+    KEY_FINDINGS_PROMPT,
 )
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "PLANNER_PROMPT",
     "SUB_TASK_PROMPT",
     "SUB_TASK_ASSESSMENT_PROMPT",
+    "KEY_FINDINGS_PROMPT",
 ]

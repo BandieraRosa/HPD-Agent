@@ -72,6 +72,17 @@ class SubTaskOutput(BaseModel):
         default=False,
         description="Whether this sub-task was executed in expert mode (hard sub-tasks).",
     )
+    tools_used: list[str] = Field(
+        default_factory=list,
+        description="Paths/identifiers of files or resources read by this sub-task's tools. "
+        "Used by downstream tasks to avoid re-reading the same resource.",
+    )
+    key_findings: list[str] = Field(
+        default_factory=list,
+        description="Concise key facts discovered by this sub-task. "
+        "Each entry is a standalone fact (e.g. 'port=8080', 'version=2.1.0'). "
+        "Used by downstream tasks to inherit knowledge without re-executing.",
+    )
 
 
 class SubTaskAssessmentResult(BaseModel):

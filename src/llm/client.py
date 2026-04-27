@@ -125,7 +125,7 @@ async def invoke_with_tools(
     tool_results: list[str] = []
     full_content = ""
 
-    max_turns = 10
+    max_turns = 20
     for _ in range(max_turns):
         response = await llm.ainvoke(messages)
         content = getattr(response, "content", "") or ""
@@ -169,7 +169,7 @@ async def invoke_with_tools(
                     if cmd.strip().startswith(safe_prefixes) or cmd.strip().startswith("cd "):
                         result = tool.invoke(args)
                         success = not str(result).startswith("[Error]")
-                        print(f"[DEBUG] Tool '{name}' succeeded (safe command)")
+                        # print(f"[DEBUG] Tool '{name}' succeeded (safe command)")
                     else:
                         confirm = input("    Confirm execution? (y/N): ").strip().lower()
                         if confirm != "y":
@@ -178,14 +178,18 @@ async def invoke_with_tools(
                         else:
                             result = tool.invoke(args)
                             success = not str(result).startswith("[Error]") and not str(result).startswith("[Cancelled]")
-                            print(f"[DEBUG] Tool '{name}' {'succeeded' if success else 'failed'}")
+                            # print(f"[DEBUG] Tool '{name}' {'succeeded' if success else 'failed'}")
+                            if not success:
+                                print(f"[DEBUG] Tool '{name}' failed: {result}")
                 else:
-                    print(f"[DEBUG] Tool '{name}' called")
+                    # print(f"[DEBUG] Tool '{name}' called")
                     result = tool.invoke(args)
                     success = not str(result).startswith("[Error]")
                     print(f"[DEBUG] Tool '{name}' {'succeeded' if success else 'failed'}")
             messages.append(AIMessage(content="", tool_calls=[call]))
             messages.append(ToolMessage(name=name, content=str(result), tool_call_id=call_id))
-            tool_results.append(f"[Tool: {name}]\n{result}")
+            # Include args in the log so downstream can parse which files were read
+            args_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) if args else ""
+            tool_results.append(f"[Tool: {name}({args_str})]\n{result}")
 
     return full_content, "\n\n".join(tool_results)
