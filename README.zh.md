@@ -94,7 +94,7 @@ answer     (DAG 规划)
 | **3+ 跨领域** | | | |
 | 17 | 全链路流式输出（全部三条路径） | **已实现** | `direct_answer`、`executor`、`main.py` |
 | 18 | 按项目隔离会话（SHA256 路径哈希） | **已实现** | `session_store.py` — `~/.hpagent/sessions/{hash}/` |
-| 19 | 多会话管理（创建、列表、切换） | **已实现** | `/new`、`/sessions`、`/sessions delete` |
+| 19 | 多会话管理（创建、列表、切换） | **已实现** | `/sessions create/list/switch/delete` |
 | 20 | 项目知识扫描与 HPD.MD 生成 | **已实现** | `/skim`、`project_scanner.py` |
 | 21 | HPD.MD 自动注入 boot prompt | **已实现** | `system_info.py`、`build_boot_prompt()` |
 | 22 | 上下文摘要 | **已实现** | `/summary` |
@@ -178,12 +178,13 @@ src/
 
 | 命令 | 说明 |
 |---|---|
-| `/model` | 列出所有已保存的 LLM 模型配置 |
+| `/model list` | 列出所有已保存的 LLM 模型配置 |
 | `/model create` | 交互式创建新模型配置 |
-| `/model <name>` | 切换到指定模型配置 |
+| `/model switch <name>` | 切换到指定模型配置 |
 | `/context [-d] [-N \| *]` | 查看上下文窗口（`-d`：完整内容，`*`：全部，`-N`：最近 N 条消息） |
-| `/new` | 开始新会话 |
-| `/sessions [id]` | 列出当前项目的所有会话或切换到指定会话 |
+| `/sessions list` | 列出当前项目的所有会话 |
+| `/sessions create` | 开始新会话 |
+| `/sessions switch <id>` | 切换到指定会话 |
 | `/sessions delete <id>` | 删除当前项目的指定会话 |
 | `/summary` | 对上下文窗口进行摘要并清空消息 |
 | `/skim [path]` | 扫描项目并生成 `HPD.MD` 项目知识摘要 |
