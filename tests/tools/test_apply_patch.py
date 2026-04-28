@@ -51,8 +51,8 @@ def test_apply_patch_placeholder_output_is_structured_error():
     )
 
     assert result.startswith(f"[Error] {NOT_IMPLEMENTED}:")
-    assert "not implemented yet" in result
-    assert "dry-run mode" in result
+    assert "尚未实现" in result
+    assert "dry-run" in result
 
 
 def test_parse_valid_add_update_delete_envelope():

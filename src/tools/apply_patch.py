@@ -1,9 +1,8 @@
 # pyright: reportUnknownVariableType=false
-"""Safer patch tool scaffold.
+"""更安全的补丁工具骨架。
 
-This module defines the LangChain tool interface for a safer patch tool. The
-v1 parser, validator, dry-run planner, and filesystem application logic will be
-filled in by later tasks.
+本模块定义更安全补丁工具的 LangChain 入口。v1 解析器、校验器、
+dry-run 规划器与文件系统应用逻辑会在后续任务中逐步补齐。
 """
 
 from dataclasses import dataclass, replace
@@ -74,8 +73,6 @@ class PatchDocument:
 
 
 class PatchError(ValueError):
-    """Patch parser error with a stable machine-readable code."""
-
     code: str
     message: str
     line: int | None
@@ -101,7 +98,6 @@ def _format_error(code: str, detail: str) -> str:
 
 
 def parse_patch_text(patch_text: str) -> PatchDocument:
-    """Parse a custom v1 patch envelope into typed operations."""
     lines = patch_text.splitlines()
     if not lines or lines[0] != BEGIN_MARKER:
         raise PatchError(INVALID_ENVELOPE, "patch must start with the begin marker", line=1)
@@ -328,19 +324,19 @@ def _is_blank_separator(line: str) -> bool:
 def _placeholder_result(patch_text: str, dry_run: bool) -> str:
     mode = "dry-run" if dry_run else "apply"
     detail = (
-        f"apply_patch {mode} mode is not implemented yet; "
-        + f"received {len(patch_text)} characters of patch text."
+        f"apply_patch 的 {mode} 模式尚未实现；"
+        + f"已收到 {len(patch_text)} 个字符的补丁文本。"
     )
     return _format_error(NOT_IMPLEMENTED, detail)
 
 
 @tool
 def apply_patch(patch_text: str, dry_run: bool = False) -> str:
-    """Apply a patch safely to the repository filesystem.
+    """安全地将补丁应用到仓库文件系统。
 
     Args:
-        patch_text: Patch text to validate and apply in a future implementation.
-        dry_run: If True, future versions will report planned changes only.
+        patch_text: 后续实现中需要校验并应用的补丁文本。
+        dry_run: 为 True 时，后续版本只报告计划变更而不写入文件。
     """
     return _placeholder_result(patch_text=patch_text, dry_run=dry_run)
 
