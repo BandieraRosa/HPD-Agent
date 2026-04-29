@@ -112,16 +112,7 @@ _ALLOWED_TEXT_CONTROL_BYTES = frozenset({0x08, 0x09, 0x0A, 0x0C, 0x0D, 0x1B})
 _FILE_LOCKS_GUARD = threading.Lock()
 _FILE_LOCKS: dict[str, threading.Lock] = {}
 _SENSITIVE_PATH_TOKENS = frozenset(
-    {
-        "secret",
-        "secrets",
-        "token",
-        "tokens",
-        "key",
-        "keys",
-        "credential",
-        "credentials",
-    }
+    {"secret", "secrets", "credential", "credentials", "*.env"}
 )
 
 
@@ -258,14 +249,42 @@ class _ApplyState:
 
 
 class PatchError(ValueError):
+    """可被模型修复的 apply_patch 失败。
+
+    这个异常会被工具入口捕获并格式化为结构化文本结果，而不是让
+    LangChain 工具调用只暴露一个笼统的 failed。字段设计目标是让 LLM
+    能根据失败信息重新读取目标区域、缩小 hunk、修正补丁后重试。
+    """
+
     code: str
     message: str
     line: int | None
+    file: str | None
+    hunk: str | None
+    expected: str | None
+    actual: str | None
+    hint: str | None
 
-    def __init__(self, code: str, message: str, *, line: int | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        line: int | None = None,
+        file: str | None = None,
+        hunk: str | None = None,
+        expected: str | None = None,
+        actual: str | None = None,
+        hint: str | None = None,
+    ) -> None:
         self.code = code
         self.message = message
         self.line = line
+        self.file = file
+        self.hunk = hunk
+        self.expected = expected
+        self.actual = actual
+        self.hint = hint
         super().__init__(self.display_message)
 
     @property
@@ -274,16 +293,77 @@ class PatchError(ValueError):
             return self.message
         return f"{self.message} (line {self.line})"
 
-    def to_error_result(self) -> str:
-        return _format_error(self.code, self.display_message)
+    def to_error_result(self, *, phase: str | None = None) -> str:
+        return _format_error(
+            self.code,
+            self.message,
+            phase=phase,
+            line=self.line,
+            file=self.file,
+            hunk=self.hunk,
+            expected=self.expected,
+            actual=self.actual,
+            hint=self.hint or _error_hint(self.code),
+        )
 
 
-def _format_error(code: str, detail: str) -> str:
-    return f"[Error] {code}: {detail}"
+def _clip_debug_text(text: str, limit: int = 1600) -> str:
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return text[:limit] + f"\n...[truncated {omitted} chars]"
+
+
+def _indent_block(text: str, prefix: str = "  ") -> str:
+    if text == "":
+        return prefix + "<empty>"
+    return "\n".join(prefix + line for line in text.splitlines())
+
+
+def _format_error(
+    code: str,
+    detail: str,
+    *,
+    phase: str | None = None,
+    line: int | None = None,
+    file: str | None = None,
+    hunk: str | None = None,
+    expected: str | None = None,
+    actual: str | None = None,
+    hint: str | None = None,
+) -> str:
+    lines = [
+        f"[Error][APPLY_PATCH][{code}]",
+        f"message: {detail}",
+    ]
+    if phase:
+        lines.append(f"phase: {phase}")
+    if line is not None:
+        lines.append(f"line: {line}")
+    if file:
+        lines.append(f"file: {file}")
+    if hunk:
+        lines.append(f"hunk: {hunk}")
+    if expected is not None:
+        lines.append("expected:")
+        lines.append(_indent_block(_clip_debug_text(expected)))
+    if actual is not None:
+        lines.append("actual:")
+        lines.append(_indent_block(_clip_debug_text(actual)))
+    if hint:
+        lines.append(f"hint: {hint}")
+    return "\n".join(lines)
 
 
 def _format_warning(code: str, detail: str) -> str:
-    return f"[Warning] {code}: {detail}"
+    return f"[Warning][APPLY_PATCH][{code}] {detail}"
+
+
+def _format_hunk_header(hunk: PatchHunk) -> str:
+    return (
+        f"@@ -{hunk.old_start},{hunk.old_count} "
+        + f"+{hunk.new_start},{hunk.new_count} @@"
+    )
 
 
 def parse_patch_text(patch_text: str) -> PatchDocument:
@@ -291,7 +371,12 @@ def parse_patch_text(patch_text: str) -> PatchDocument:
     lines = patch_text.splitlines()
     if not lines or lines[0] != BEGIN_MARKER:
         raise PatchError(
-            INVALID_ENVELOPE, "patch must start with the begin marker", line=1
+            INVALID_ENVELOPE,
+            "patch must start with the begin marker",
+            line=1,
+            expected=BEGIN_MARKER,
+            actual=lines[0] if lines else "<empty patch>",
+            hint="请输出完整 v1 patch 信封，不要输出 git diff。",
         )
 
     end_index = _find_end_marker(lines)
@@ -524,23 +609,55 @@ def _validate_hunk_accounting(hunk: PatchHunk) -> None:
     old_side_count = sum(1 for line in hunk.lines if line.kind != "add")
     new_side_count = sum(1 for line in hunk.lines if line.kind != "delete")
     if old_side_count != hunk.old_count or new_side_count != hunk.new_count:
-        raise PatchError(HUNK_MISMATCH, "hunk 行数与头部计数不一致")
+        raise PatchError(
+            HUNK_MISMATCH,
+            "hunk 行数与头部计数不一致",
+            hunk=_format_hunk_header(hunk),
+            expected=f"old_count={hunk.old_count}, new_count={hunk.new_count}",
+            actual=f"old_side_count={old_side_count}, new_side_count={new_side_count}",
+            hint="请重新计算 hunk header 中的 old_count/new_count；上下文行同时计入旧侧和新侧。",
+        )
     if hunk.old_count == 0 and any(line.kind != "add" for line in hunk.lines):
-        raise PatchError(HUNK_MISMATCH, "零长度插入 hunk 只能包含新增行")
+        raise PatchError(
+            HUNK_MISMATCH,
+            "零长度插入 hunk 只能包含新增行",
+            hunk=_format_hunk_header(hunk),
+            hint="old_count=0 的插入 hunk 只能包含以 + 开头的新增行。",
+        )
 
 
 def _hunk_original_span(hunk: PatchHunk, original_line_count: int) -> tuple[int, int]:
     if hunk.old_count == 0:
         if hunk.old_start < 0 or hunk.old_start > original_line_count:
-            raise PatchError(HUNK_MISMATCH, "插入位置超出原文件行数")
+            raise PatchError(
+                HUNK_MISMATCH,
+                "插入位置超出原文件行数",
+                hunk=_format_hunk_header(hunk),
+                expected=f"old_start must be between 0 and {original_line_count}",
+                actual=f"old_start={hunk.old_start}",
+                hint="请重新读取目标文件行数后生成补丁。",
+            )
         return hunk.old_start, hunk.old_start
 
     if hunk.old_start < 1:
-        raise PatchError(HUNK_MISMATCH, "非插入 hunk 的 old_start 必须从 1 开始")
+        raise PatchError(
+            HUNK_MISMATCH,
+            "非插入 hunk 的 old_start 必须从 1 开始",
+            hunk=_format_hunk_header(hunk),
+            expected="old_start >= 1",
+            actual=f"old_start={hunk.old_start}",
+        )
     start_index = hunk.old_start - 1
     end_index = start_index + hunk.old_count
     if end_index > original_line_count:
-        raise PatchError(HUNK_MISMATCH, "hunk 指向的原文件范围不存在")
+        raise PatchError(
+            HUNK_MISMATCH,
+            "hunk 指向的原文件范围不存在",
+            hunk=_format_hunk_header(hunk),
+            expected=f"end_index <= original_line_count ({original_line_count})",
+            actual=f"end_index={end_index}",
+            hint="请重新读取目标文件相邻行，确认 hunk 的 old_start/old_count。",
+        )
     return start_index, end_index
 
 
@@ -561,7 +678,17 @@ def _validate_hunk_against_original(
                 raise PatchError(HUNK_MISMATCH, "hunk 旧侧行数超过声明范围")
             original_line = original_lines[old_index]
             if original_line.content != hunk_line.content:
-                raise PatchError(HUNK_MISMATCH, "hunk 旧侧内容与目标文件不匹配")
+                raise PatchError(
+                    HUNK_MISMATCH,
+                    "hunk 旧侧内容与目标文件不匹配",
+                    hunk=_format_hunk_header(hunk),
+                    expected=hunk_line.content,
+                    actual=original_line.content,
+                    hint=(
+                        "请重新读取目标文件对应行，使用精确原文生成更小的 hunk；"
+                        "注意空格、中文标点、反引号和末尾换行。"
+                    ),
+                )
             _validate_old_eof_marker(original_lines, old_index, hunk_line)
             old_index += 1
 
@@ -600,12 +727,23 @@ def _validate_old_eof_marker(
     if hunk_line.no_newline_at_end:
         if original_line.has_newline or not is_final_original_line:
             raise PatchError(
-                INVALID_EOF_MARKER, "EOF 标记必须匹配原文件最后一个无换行行"
+                INVALID_EOF_MARKER,
+                "EOF 标记必须匹配原文件最后一个无换行行",
+                expected="EOF marker only on the final original line without trailing newline",
+                actual=(
+                    f"is_final_original_line={is_final_original_line}, "
+                    + f"original_line_has_newline={original_line.has_newline}"
+                ),
+                hint="只有目标文件最后一行没有换行时，旧侧对应行才需要 EOF 标记。",
             )
         return
     if not original_line.has_newline:
         raise PatchError(
-            INVALID_EOF_MARKER, "原文件无末尾换行时 hunk 必须显式 EOF 标记"
+            INVALID_EOF_MARKER,
+            "原文件无末尾换行时 hunk 必须显式 EOF 标记",
+            expected="old-side final line followed by '\\ No newline at end of file'",
+            actual="old-side final line omitted EOF marker",
+            hint="请在 hunk 中最后一个旧侧行后立即添加 EOF marker。",
         )
 
 
@@ -671,7 +809,13 @@ def _plan_patch_document_locked(
         except PatchError as exc:
             raise PatchError(
                 exc.code,
-                f"{validated_operation.relative_path.as_posix()}: {exc.display_message}",
+                exc.message,
+                line=exc.line,
+                file=exc.file or validated_operation.relative_path.as_posix(),
+                hunk=exc.hunk,
+                expected=exc.expected,
+                actual=exc.actual,
+                hint=exc.hint,
             ) from exc
 
     return PlannedPatch(
@@ -899,7 +1043,7 @@ def _ensure_likely_text_bytes(content: bytes, *, subject: str) -> None:
 
 
 def _format_patch_error(error: PatchError, *, phase: str) -> str:
-    return f"{error.to_error_result()} 上下文: {phase} 阶段。提示: {_error_hint(error.code)}"
+    return error.to_error_result(phase=phase)
 
 
 def _error_hint(code: str) -> str:
@@ -908,7 +1052,10 @@ def _error_hint(code: str) -> str:
         TARGET_MISSING: "请确认目标文件存在，或改用 Add File。",
         TARGET_IS_DIRECTORY: "请指定普通文件路径，不能指定目录。",
         FINAL_TOO_LARGE: "请拆分补丁或缩小目标文件内容。",
-        HUNK_MISMATCH: "请根据目标文件当前内容重新生成 hunk。",
+        HUNK_MISMATCH: "请根据目标文件当前内容重新生成 hunk；必要时先读取目标区域并缩小补丁。",
+        MALFORMED_HUNK: "请检查 hunk header 和每行前缀；不要使用 git diff 的 ---/+++ 格式。",
+        MALFORMED_SECTION: "请检查 Add/Update/Delete section 格式；Add File 正文每行都必须以 + 开头。",
+        INVALID_ENVELOPE: "请输出完整 v1 patch：以 *** Begin Patch 开始，以 *** End Patch 结束。",
         HUNK_ORDER_ERROR: "请按原文件行号排序 hunk，且不要重叠。",
         TARGET_CHANGED: "请重新读取目标文件后再生成补丁。",
         ROLLBACK_FAILED: "请检查残留备份或临时文件后手动处理。",
@@ -1531,7 +1678,12 @@ def _find_end_marker(lines: list[str]) -> int:
     for index, line in enumerate(lines[1:], start=1):
         if line == END_MARKER:
             return index
-    raise PatchError(INVALID_ENVELOPE, "patch is missing the end marker")
+    raise PatchError(
+        INVALID_ENVELOPE,
+        "patch is missing the end marker",
+        expected=END_MARKER,
+        hint="请确保补丁最后一行是 *** End Patch。",
+    )
 
 
 def _parse_add_file(
@@ -1550,6 +1702,9 @@ def _parse_add_file(
                 MALFORMED_SECTION,
                 "Add File body lines must start with '+'",
                 line=index + 2,
+                file=path,
+                actual=line,
+                hint="Add File 的每一行正文都必须以 + 开头；空行也要写成 +。",
             )
         added_lines.append(PatchHunkLine(kind="add", content=line[1:]))
 
@@ -1673,6 +1828,10 @@ def _parse_hunk(
             MALFORMED_HUNK,
             "hunk body does not match header counts",
             line=header_index + 2,
+            hunk=header,
+            expected=f"old_count={old_count}, new_count={new_count}",
+            actual=f"old_seen={old_seen}, new_seen={new_seen}",
+            hint="请检查 hunk body 每一行前缀：空格行同时计入旧/新，- 行只计入旧，+ 行只计入新。",
         )
 
     return (
@@ -1711,7 +1870,7 @@ def _is_blank_separator(line: str) -> bool:
 
 
 @tool
-def apply_patch(patch_text: str, dry_run: bool = False) -> str:
+def apply_patch(patch_text: str, dry_run: bool = True) -> str:
     """解析并应用 v1 apply_patch 补丁。
 
     v1 只支持 ``*** Begin Patch`` / ``*** End Patch`` 信封和 Add、Update、

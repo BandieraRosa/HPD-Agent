@@ -59,9 +59,9 @@ answer     (DAG 规划)
 
 **执行路径**
 
-| 路径 | 触发条件 | 步骤 |
-|---|---|---|
-| 直答 | Level-1 判定为 `simple` | assessment → direct_answer → END |
+| 路径 | 触发条件                 | 步骤                                                          |
+| ---- | ------------------------ | ------------------------------------------------------------- |
+| 直答 | Level-1 判定为 `simple`  | assessment → direct_answer → END                              |
 | 完整 | Level-1 判定为 `complex` | assessment → coordinator → scheduler_node → synthesizer → END |
 
 ---
@@ -70,41 +70,41 @@ answer     (DAG 规划)
 
 基于 [HPD-Agent 论文](./HPD-Agent.md)。
 
-| # | 论文功能 | 状态 | 备注 |
-|---|---|---|---|
-| **2.1 分层路由** | | | |
-| 1 | Level-1 评估：simple / complex | **已实现** | `src/nodes/assessment.py` |
-| 2 | Level-2 评估：easy / hard（逐子任务） | **已实现** | `src/nodes/execution.py` |
-| 3 | 针对 hard 子任务的动态专家模式 | **部分实现** | 状态中记录了 expert_mode 标记，但自我反思迭代循环尚未接入 |
-| **2.2 并行执行** | | | |
-| 4 | 通过 LLM planner 进行 DAG 分解 | **已实现** | `src/nodes/planning.py` |
-| 5 | Kahn 拓扑排序 | **已实现** | `src/nodes/scheduler.py` |
-| 6 | 基于入度的就绪层批处理 | **已实现** | `src/nodes/scheduler.py` |
-| 7 | `asyncio.gather` 并行执行 | **已实现** | `src/nodes/scheduler.py` |
-| 8 | 指数退避重试（1s→2s→4s，上限 10s） | **已实现** | `src/nodes/scheduler.py` |
-| 9 | 死锁检测（就绪队列为空但未全部完成） | **已实现** | `src/nodes/scheduler.py` |
-| 10 | DAG 环检测 + LLM 重试（最多 3 次） | **已实现** | `src/nodes/planning.py` |
-| 11 | 线程安全的进度输出（`threading.Lock`） | **已实现** | `src/nodes/scheduler.py` |
-| **2.3 动态专家模式** | | | |
-| 12 | 多路候选生成（高温度参数） | 未实现 | 计划中 |
-| 13 | 动态权重评估（任务类型感知指标） | 未实现 | 计划中 |
-| 14 | 多维评分筛选（评估智能体） | 未实现 | 计划中 |
-| 15 | 自我反思与迭代优化 | 未实现 | 计划中 |
-| 16 | 收敛失败时回退至缓存最优结果 | 未实现 | 计划中 |
-| **3+ 跨领域** | | | |
-| 17 | 全链路流式输出（全部三条路径） | **已实现** | `direct_answer`、`executor`、`main.py` |
-| 18 | 按项目隔离会话（SHA256 路径哈希） | **已实现** | `session_store.py` — `~/.hpagent/sessions/{hash}/` |
-| 19 | 多会话管理（创建、列表、切换） | **已实现** | `/new`、`/sessions`、`/sessions delete` |
-| 20 | 项目知识扫描与 HPD.MD 生成 | **已实现** | `/skim`、`project_scanner.py` |
-| 21 | HPD.MD 自动注入 boot prompt | **已实现** | `system_info.py`、`build_boot_prompt()` |
-| 22 | 上下文摘要 | **已实现** | `/summary` |
-| 23 | Token 用量追踪（tiktoken） | **已实现** | `/tokens` |
-| 24 | 多后端检查点持久化（Memory / SQLite / Postgres） | **已实现** | LangGraph Checkpointing |
-| 25 | 模型配置管理（JSON + CLI） | **已实现** | `/model` + `src/models/` |
-| 26 | 多智能体协作（Coordinator + Expert agents） | **部分实现** | Coordinator 已存在；Expert agents 尚未独立拆分 |
-| 27 | 工具注册与工具调用 | 未实现 | 存根已预留，尚未接入 |
-| 28 | 长期记忆（向量数据库 RAG） | 未实现 | 计划中 |
-| 29 | OpenTelemetry 可观测性 | 未实现 | 计划中 |
+| #                    | 论文功能                                         | 状态         | 备注                                                      |
+| -------------------- | ------------------------------------------------ | ------------ | --------------------------------------------------------- |
+| **2.1 分层路由**     |                                                  |              |                                                           |
+| 1                    | Level-1 评估：simple / complex                   | **已实现**   | `src/nodes/assessment.py`                                 |
+| 2                    | Level-2 评估：easy / hard（逐子任务）            | **已实现**   | `src/nodes/execution.py`                                  |
+| 3                    | 针对 hard 子任务的动态专家模式                   | **部分实现** | 状态中记录了 expert_mode 标记，但自我反思迭代循环尚未接入 |
+| **2.2 并行执行**     |                                                  |              |                                                           |
+| 4                    | 通过 LLM planner 进行 DAG 分解                   | **已实现**   | `src/nodes/planning.py`                                   |
+| 5                    | Kahn 拓扑排序                                    | **已实现**   | `src/nodes/scheduler.py`                                  |
+| 6                    | 基于入度的就绪层批处理                           | **已实现**   | `src/nodes/scheduler.py`                                  |
+| 7                    | `asyncio.gather` 并行执行                        | **已实现**   | `src/nodes/scheduler.py`                                  |
+| 8                    | 指数退避重试（1s→2s→4s，上限 10s）               | **已实现**   | `src/nodes/scheduler.py`                                  |
+| 9                    | 死锁检测（就绪队列为空但未全部完成）             | **已实现**   | `src/nodes/scheduler.py`                                  |
+| 10                   | DAG 环检测 + LLM 重试（最多 3 次）               | **已实现**   | `src/nodes/planning.py`                                   |
+| 11                   | 线程安全的进度输出（`threading.Lock`）           | **已实现**   | `src/nodes/scheduler.py`                                  |
+| **2.3 动态专家模式** |                                                  |              |                                                           |
+| 12                   | 多路候选生成（高温度参数）                       | 未实现       | 计划中                                                    |
+| 13                   | 动态权重评估（任务类型感知指标）                 | 未实现       | 计划中                                                    |
+| 14                   | 多维评分筛选（评估智能体）                       | 未实现       | 计划中                                                    |
+| 15                   | 自我反思与迭代优化                               | 未实现       | 计划中                                                    |
+| 16                   | 收敛失败时回退至缓存最优结果                     | 未实现       | 计划中                                                    |
+| **3+ 跨领域**        |                                                  |              |                                                           |
+| 17                   | 全链路流式输出（全部三条路径）                   | **已实现**   | `direct_answer`、`executor`、`main.py`                    |
+| 18                   | 按项目隔离会话（SHA256 路径哈希）                | **已实现**   | `session_store.py` — `~/.hpagent/sessions/{hash}/`        |
+| 19                   | 多会话管理（创建、列表、切换）                   | **已实现**   | `/new`、`/sessions`、`/sessions delete`                   |
+| 20                   | 项目知识扫描与 HPD.MD 生成                       | **已实现**   | `/skim`、`project_scanner.py`                             |
+| 21                   | HPD.MD 自动注入 boot prompt                      | **已实现**   | `system_info.py`、`build_boot_prompt()`                   |
+| 22                   | 上下文摘要                                       | **已实现**   | `/summary`                                                |
+| 23                   | Token 用量追踪（tiktoken）                       | **已实现**   | `/tokens`                                                 |
+| 24                   | 多后端检查点持久化（Memory / SQLite / Postgres） | **已实现**   | LangGraph Checkpointing                                   |
+| 25                   | 模型配置管理（JSON + CLI）                       | **已实现**   | `/model` + `src/models/`                                  |
+| 26                   | 多智能体协作（Coordinator + Expert agents）      | **部分实现** | Coordinator 已存在；Expert agents 尚未独立拆分            |
+| 27                   | 工具注册与工具调用                               | 未实现       | 存根已预留，尚未接入                                      |
+| 28                   | 长期记忆（向量数据库 RAG）                       | 未实现       | 计划中                                                    |
+| 29                   | OpenTelemetry 可观测性                           | 未实现       | 计划中                                                    |
 
 ---
 
@@ -176,20 +176,20 @@ src/
 
 ## 命令
 
-| 命令 | 说明 |
-|---|---|
-| `/model` | 列出所有已保存的 LLM 模型配置 |
-| `/model create` | 交互式创建新模型配置 |
-| `/model <name>` | 切换到指定模型配置 |
+| 命令                      | 说明                                                             |
+| ------------------------- | ---------------------------------------------------------------- |
+| `/model`                  | 列出所有已保存的 LLM 模型配置                                    |
+| `/model create`           | 交互式创建新模型配置                                             |
+| `/model <name>`           | 切换到指定模型配置                                               |
 | `/context [-d] [-N \| *]` | 查看上下文窗口（`-d`：完整内容，`*`：全部，`-N`：最近 N 条消息） |
-| `/new` | 开始新会话 |
-| `/sessions [id]` | 列出当前项目的所有会话或切换到指定会话 |
-| `/sessions delete <id>` | 删除当前项目的指定会话 |
-| `/summary` | 对上下文窗口进行摘要并清空消息 |
-| `/skim [path]` | 扫描项目并生成 `HPD.MD` 项目知识摘要 |
-| `/tokens` | 显示当前上下文的 token 用量 |
-| `/exit` | 退出 |
-| `/help` | 显示所有命令 |
+| `/new`                    | 开始新会话                                                       |
+| `/sessions [id]`          | 列出当前项目的所有会话或切换到指定会话                           |
+| `/sessions delete <id>`   | 删除当前项目的指定会话                                           |
+| `/summary`                | 对上下文窗口进行摘要并清空消息                                   |
+| `/skim [path]`            | 扫描项目并生成 `HPD.MD` 项目知识摘要                             |
+| `/tokens`                 | 显示当前上下文的 token 用量                                      |
+| `/exit`                   | 退出                                                             |
+| `/help`                   | 显示所有命令                                                     |
 
 ---
 
@@ -199,11 +199,11 @@ src/
 
 默认配置使用：
 
-| 字段 | 值 |
-|---|---|
-| 模型 | `deepseek-v4-flash` |
-| Base URL | `https://api.deepseek.com` |
-| API Key | `DEEPSEEK_API_KEY` 环境变量 |
+| 字段     | 值                          |
+| -------- | --------------------------- |
+| 模型     | `deepseek-v4-flash`         |
+| Base URL | `https://api.deepseek.com`  |
+| API Key  | `DEEPSEEK_API_KEY` 环境变量 |
 
 可通过 `/model create` 添加更多配置。在 `get_llm()` 中任何显式传入的参数都会覆盖当前激活的配置。
 

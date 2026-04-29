@@ -96,11 +96,11 @@ Based on the [HPD-Agent paper](./HPD-Agent.md).
 | 16                           | Fallback to cached best result on convergence failure    | Not yet         | Planned                                                                               |
 | **3+ Cross-cutting**         |                                                          |                 |                                                                                       |
 | 17                           | Full streaming output (all three paths)                  | **Implemented** | `direct_answer`, `executor`, `main.py`                                                |
-| 18                           | Per-project session isolation (SHA256 path hash)           | **Implemented** | `session_store.py` — `~/.hpagent/sessions/{hash}/`                                       |
-| 19                           | Multi-session management (create, list, switch)            | **Implemented** | `/new`, `/sessions`, `/sessions delete`                                                 |
-| 20                           | Project knowledge scan & HPD.MD generation                 | **Implemented** | `/skim`, `project_scanner.py`                                                          |
-| 21                           | HPD.MD auto-injection into boot prompt                    | **Implemented** | `system_info.py`, `build_boot_prompt()`                                                |
-| 22                           | Context summarization                                     | **Implemented** | `/summary`                                                                            |
+| 18                           | Per-project session isolation (SHA256 path hash)         | **Implemented** | `session_store.py` — `~/.hpagent/sessions/{hash}/`                                    |
+| 19                           | Multi-session management (create, list, switch)          | **Implemented** | `/new`, `/sessions`, `/sessions delete`                                               |
+| 20                           | Project knowledge scan & HPD.MD generation               | **Implemented** | `/skim`, `project_scanner.py`                                                         |
+| 21                           | HPD.MD auto-injection into boot prompt                   | **Implemented** | `system_info.py`, `build_boot_prompt()`                                               |
+| 22                           | Context summarization                                    | **Implemented** | `/summary`                                                                            |
 | 23                           | Token-usage tracking (tiktoken)                          | **Implemented** | `/tokens`                                                                             |
 | 24                           | Multi-backend checkpointing (Memory / SQLite / Postgres) | **Implemented** | LangGraph Checkpointing                                                               |
 | 25                           | Model profile management (JSON, CLI)                     | **Implemented** | `/model` + `src/models/`                                                              |
@@ -181,20 +181,20 @@ src/
 ## Commands
 
 
-| Command                  | Description                                                                |
-| ------------------------ | -------------------------------------------------------------------------- |
-| `/model`                 | List all saved LLM profiles                                                |
-| `/model create`          | Interactively create a new model profile                                   |
-| `/model <name>`          | Switch to a saved model                                                    |
-| `/context [-d] [-N]`     | View context window ( `-d`: full content, `*`: all, `-N`: last N messages) |
-| `/new`                   | Start a new conversation session                                           |
-| `/sessions [id]`         | List sessions for the current project or switch to one                     |
-| `/sessions delete <id>`  | Delete a session for the current project                                   |
-| `/summary`               | Summarize context window and clear messages                                |
-| `/skim [path]`           | Scan the project and generate `HPD.MD` project knowledge summary           |
-| `/tokens`                | Show token usage of current context                                        |
-| `/exit`                  | Exit                                                                       |
-| `/help`                  | Show all commands                                                          |
+| Command                 | Description                                                                |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `/model`                | List all saved LLM profiles                                                |
+| `/model create`         | Interactively create a new model profile                                   |
+| `/model <name>`         | Switch to a saved model                                                    |
+| `/context [-d] [-N]`    | View context window ( `-d`: full content, `*`: all, `-N`: last N messages) |
+| `/new`                  | Start a new conversation session                                           |
+| `/sessions [id]`        | List sessions for the current project or switch to one                     |
+| `/sessions delete <id>` | Delete a session for the current project                                   |
+| `/summary`              | Summarize context window and clear messages                                |
+| `/skim [path]`          | Scan the project and generate `HPD.MD` project knowledge summary           |
+| `/tokens`               | Show token usage of current context                                        |
+| `/exit`                 | Exit                                                                       |
+| `/help`                 | Show all commands                                                          |
 
 
 ---
