@@ -1,7 +1,9 @@
 # pyright: reportUnknownMemberType=false
 import importlib
+import os
 from pathlib import Path
-from typing import cast
+import stat
+from typing import Callable, cast
 
 import pytest
 
@@ -18,7 +20,6 @@ from src.tools.apply_patch import (
     MALFORMED_SECTION,
     MIXED_NEWLINES,
     NOOP_PATCH,
-    NOT_IMPLEMENTED,
     PATCH_TEXT_LIMIT_BYTES,
     PATCH_TOO_LARGE,
     SENSITIVE_PATH,
@@ -28,11 +29,15 @@ from src.tools.apply_patch import (
     TARGET_IS_SYMLINK,
     TARGET_MISSING,
     TARGET_TOO_LARGE,
+    TARGET_CHANGED,
+    APPLY_FAILED,
     UTF8_BOM,
     ExistingFileContent,
     PatchDocument,
     PatchError,
     PatchOperation,
+    PlannedOperation,
+    PlannedPatch,
     apply_patch,
     apply_update_hunks,
     parse_patch_text,
@@ -579,6 +584,338 @@ def test_dry_run_delete_rejects_invalid_utf8(
     assert result.startswith(f"[Error] {INVALID_UTF8}:")
 
 
+def test_apply_valid_multi_file_patch_add_update_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    existing = tmp_path / "existing.txt"
+    old_file = tmp_path / "old.txt"
+    _ = existing.write_bytes(b"old\n")
+    _ = old_file.write_bytes(b"remove\n")
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Add File: nested/new.txt",
+        "+created",
+        "*** Update File: existing.txt",
+        "@@ -1,1 +1,1 @@",
+        "-old",
+        "+new",
+        "*** Delete File: old.txt",
+        "*** End Patch",
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith("[OK] Applied patch")
+    assert "Add 1" in result
+    assert "Update 1" in result
+    assert "Delete 1" in result
+    assert (tmp_path / "nested/new.txt").read_bytes() == b"created\n"
+    assert existing.read_bytes() == b"new\n"
+    assert not old_file.exists()
+    assert not list(tmp_path.rglob(".old.txt.apply-patch-*"))
+
+
+def test_apply_parent_dir_component_file_fails_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    parent_file = tmp_path / "parent"
+    _ = parent_file.write_text("still file", encoding="utf-8")
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Add File: parent/child.txt",
+        "+content",
+        "*** End Patch",
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(f"[Error] {INVALID_PATH}:")
+    assert parent_file.read_text(encoding="utf-8") == "still file"
+    assert not (tmp_path / "parent/child.txt").exists()
+
+
+def test_rollback_after_partial_failure_removes_added_file_and_parent_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "target.txt"
+    _ = target.write_bytes(b"old\n")
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Add File: new/dir/added.txt",
+        "+created",
+        "*** Update File: target.txt",
+        "@@ -1,1 +1,1 @@",
+        "-old",
+        "+new",
+        "*** End Patch",
+    )
+
+    def fail_on_update(operation: PlannedOperation) -> None:
+        if operation.path == "target.txt":
+            raise PatchError(APPLY_FAILED, "测试注入失败")
+
+    monkeypatch.setattr(
+        apply_patch_module, "_before_apply_operation_hook", fail_on_update
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(f"[Error] {APPLY_FAILED}:")
+    assert target.read_bytes() == b"old\n"
+    assert not (tmp_path / "new").exists()
+
+
+def test_revalidate_target_changed_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "target.txt"
+    _ = target.write_bytes(b"old\n")
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Update File: target.txt",
+        "@@ -1,1 +1,1 @@",
+        "-old",
+        "+new",
+        "*** End Patch",
+    )
+
+    def change_after_validation(planned_patch: PlannedPatch) -> None:
+        _ = planned_patch
+        _ = target.write_bytes(b"changed\n")
+
+    monkeypatch.setattr(
+        apply_patch_module, "_pre_write_revalidation_hook", change_after_validation
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(f"[Error] {TARGET_CHANGED}:")
+    assert target.read_bytes() == b"changed\n"
+
+
+def test_apply_preserves_permission_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "script.sh"
+    _ = script.write_bytes(b"old\n")
+    os.chmod(script, 0o755)
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Update File: script.sh",
+        "@@ -1,1 +1,1 @@",
+        "-old",
+        "+new",
+        "*** End Patch",
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith("[OK] Applied patch")
+    assert script.read_bytes() == b"new\n"
+    assert stat.S_IMODE(script.stat().st_mode) == 0o755
+
+
+def test_delete_rollback_after_partial_failure_restores_bytes_and_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    victim = tmp_path / "victim.txt"
+    _ = victim.write_bytes(b"victim\n")
+    os.chmod(victim, 0o640)
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Delete File: victim.txt",
+        "*** Add File: after.txt",
+        "+after",
+        "*** End Patch",
+    )
+
+    def fail_on_add(operation: PlannedOperation) -> None:
+        if operation.path == "after.txt":
+            raise PatchError(APPLY_FAILED, "测试注入失败")
+
+    monkeypatch.setattr(apply_patch_module, "_before_apply_operation_hook", fail_on_add)
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(f"[Error] {APPLY_FAILED}:")
+    assert victim.read_bytes() == b"victim\n"
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o640
+    assert not (tmp_path / "after.txt").exists()
+
+
+def test_update_change_during_planning_rejects_stale_content_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "target.txt"
+    _ = target.write_bytes(b"old\n")
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Update File: target.txt",
+        "@@ -1,1 +1,1 @@",
+        "-old",
+        "+new",
+        "*** End Patch",
+    )
+    changed = False
+
+    def change_during_read(path: Path) -> None:
+        nonlocal changed
+        if path.name == "target.txt" and not changed:
+            changed = True
+            _ = target.write_bytes(b"race\n")
+
+    monkeypatch.setattr(
+        apply_patch_module, "_after_existing_bytes_read_hook", change_during_read
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(f"[Error] {TARGET_CHANGED}:")
+    assert target.read_bytes() == b"race\n"
+
+
+def test_delete_change_during_planning_rejects_stale_content_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "delete-me.txt"
+    _ = target.write_bytes(b"delete\n")
+    patch_text = _patch(
+        "*** Begin Patch", "*** Delete File: delete-me.txt", "*** End Patch"
+    )
+    changed = False
+
+    def change_during_read(path: Path) -> None:
+        nonlocal changed
+        if path.name == "delete-me.txt" and not changed:
+            changed = True
+            _ = target.write_bytes(b"race\n")
+
+    monkeypatch.setattr(
+        apply_patch_module, "_after_existing_bytes_read_hook", change_during_read
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(f"[Error] {TARGET_CHANGED}:")
+    assert target.read_bytes() == b"race\n"
+
+
+def test_success_cleanup_failure_returns_structured_apply_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Add File: cleanup.txt",
+        "+created",
+        "*** End Patch",
+    )
+
+    def fail_cleanup(path: Path) -> None:
+        if "apply-patch-temp" in path.name:
+            raise OSError("cleanup failed")
+        original_remove(path)
+
+    original_remove = cast(
+        Callable[[Path], None], apply_patch_module._remove_path_if_exists
+    )
+    monkeypatch.setattr(apply_patch_module, "_remove_path_if_exists", fail_cleanup)
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(f"[Error] {APPLY_FAILED}:")
+    assert "残留路径" in result
+    assert (tmp_path / "cleanup.txt").read_bytes() == b"created\n"
+
+
+def test_update_symlink_swap_during_target_read_is_not_followed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "target.txt"
+    symlink_source = tmp_path / "symlink-source.txt"
+    _ = target.write_bytes(b"old\n")
+    _ = symlink_source.write_bytes(b"old\n")
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Update File: target.txt",
+        "@@ -1,1 +1,1 @@",
+        "-old",
+        "+new",
+        "*** End Patch",
+    )
+    open_count = 0
+
+    def swap_before_planning_open(path: Path) -> None:
+        nonlocal open_count
+        if path.name != "target.txt":
+            return
+        open_count += 1
+        if open_count == 2:
+            target.unlink()
+            target.symlink_to(symlink_source)
+
+    monkeypatch.setattr(
+        apply_patch_module, "_before_target_open_hook", swap_before_planning_open
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(f"[Error] {TARGET_IS_SYMLINK}:")
+    assert target.is_symlink()
+    assert symlink_source.read_bytes() == b"old\n"
+
+
+def test_delete_symlink_swap_during_target_read_is_not_followed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "delete-me.txt"
+    symlink_source = tmp_path / "symlink-source.txt"
+    _ = target.write_bytes(b"delete\n")
+    _ = symlink_source.write_bytes(b"delete\n")
+    patch_text = _patch(
+        "*** Begin Patch", "*** Delete File: delete-me.txt", "*** End Patch"
+    )
+    swapped = False
+
+    def swap_before_delete_open(path: Path) -> None:
+        nonlocal swapped
+        if path.name == "delete-me.txt" and not swapped:
+            swapped = True
+            target.unlink()
+            target.symlink_to(symlink_source)
+
+    monkeypatch.setattr(
+        apply_patch_module, "_before_target_open_hook", swap_before_delete_open
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(f"[Error] {TARGET_IS_SYMLINK}:")
+    assert target.is_symlink()
+    assert symlink_source.read_bytes() == b"delete\n"
+
+
 def test_apply_patch_tool_name_is_stable():
     assert apply_patch.name == "apply_patch"
 
@@ -590,7 +927,7 @@ def test_apply_patch_tool_args_include_public_scaffold_parameters():
     assert "dry_run" in tool_args
 
 
-def test_apply_patch_placeholder_output_is_structured_error():
+def test_apply_patch_non_dry_run_parse_error_is_structured():
     result = cast(
         str,
         apply_patch.invoke(
@@ -601,9 +938,9 @@ def test_apply_patch_placeholder_output_is_structured_error():
         ),
     )
 
-    assert result.startswith(f"[Error] {NOT_IMPLEMENTED}:")
-    assert "尚未实现" in result
+    assert result.startswith(f"[Error] {INVALID_ENVELOPE}:")
     assert "apply" in result
+    assert "提示:" in result
 
 
 def test_parse_valid_add_update_delete_envelope():

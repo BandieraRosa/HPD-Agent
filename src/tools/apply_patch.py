@@ -6,10 +6,14 @@ dry-run 规划器与文件系统应用逻辑会在后续任务中逐步补齐。
 """
 
 from dataclasses import dataclass, replace
+import errno
+import hashlib
+import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
-from typing import Literal
+import tempfile
+from typing import Literal, cast
 
 from langchain_core.tools import tool
 
@@ -44,6 +48,8 @@ INVALID_EOF_MARKER = "INVALID_EOF_MARKER"
 NOOP_PATCH = "NOOP_PATCH"
 UNSAFE_PATH = "UNSAFE_PATH"
 APPLY_FAILED = "APPLY_FAILED"
+TARGET_CHANGED = "TARGET_CHANGED"
+ROLLBACK_FAILED = "ROLLBACK_FAILED"
 
 ERROR_CODES = (
     NOT_IMPLEMENTED,
@@ -69,6 +75,8 @@ ERROR_CODES = (
     NOOP_PATCH,
     UNSAFE_PATH,
     APPLY_FAILED,
+    TARGET_CHANGED,
+    ROLLBACK_FAILED,
 )
 
 OperationKind = Literal["add", "update", "delete"]
@@ -161,17 +169,33 @@ class UpdateApplyResult:
 
 
 @dataclass(frozen=True)
+class TargetSnapshot:
+    exists: bool
+    is_symlink: bool
+    is_directory: bool
+    size: int | None = None
+    mtime_ns: int | None = None
+    mode: int | None = None
+    sha256: str | None = None
+
+
+@dataclass(frozen=True)
 class PlannedOperation:
     kind: OperationKind
     path: str
     final_size: int
     stats: LineStats
+    target_path: Path
+    relative_path: Path
+    final_bytes: bytes | None
+    original_snapshot: TargetSnapshot
 
 
 @dataclass(frozen=True)
 class PlannedPatch:
     operations: tuple[PlannedOperation, ...]
     total_final_size: int
+    workspace_root: Path
 
 
 @dataclass(frozen=True)
@@ -188,6 +212,21 @@ class _HunkPlan:
     output_lines: tuple[_FileLine, ...]
     added_lines: int
     deleted_lines: int
+
+
+@dataclass(frozen=True)
+class _AppliedOperation:
+    kind: OperationKind
+    target_path: Path
+    backup_path: Path | None = None
+    added_path: Path | None = None
+
+
+@dataclass
+class _ApplyState:
+    applied_operations: list[_AppliedOperation]
+    temp_paths: list[Path]
+    created_dirs: list[Path]
 
 
 class PatchError(ValueError):
@@ -582,6 +621,7 @@ def plan_patch_dry_run(patch_text: str) -> PlannedPatch:
     return PlannedPatch(
         operations=tuple(planned_operations),
         total_final_size=sum(operation.final_size for operation in planned_operations),
+        workspace_root=validated_patch.workspace_root,
     )
 
 
@@ -617,7 +657,65 @@ def _dry_run_patch_result(patch_text: str) -> str:
     try:
         return format_dry_run_result(plan_patch_dry_run(patch_text))
     except PatchError as exc:
-        return _format_patch_error(exc)
+        return _format_patch_error(exc, phase="dry-run")
+
+
+def apply_patch_to_files(patch_text: str) -> PlannedPatch:
+    planned_patch = plan_patch_dry_run(patch_text)
+    _pre_write_revalidation_hook(planned_patch)
+    _revalidate_planned_patch(planned_patch)
+    state = _ApplyState(applied_operations=[], temp_paths=[], created_dirs=[])
+
+    try:
+        for operation in planned_patch.operations:
+            _apply_planned_operation(operation, state)
+    except PatchError:
+        _rollback_apply_state(state)
+        raise
+    except Exception as exc:
+        try:
+            _rollback_apply_state(state)
+        except PatchError as rollback_error:
+            raise rollback_error from exc
+        raise PatchError(APPLY_FAILED, f"应用补丁失败：{type(exc).__name__}") from exc
+
+    _cleanup_success_paths(state)
+    return planned_patch
+
+
+def _apply_patch_result(patch_text: str) -> str:
+    try:
+        planned_patch = apply_patch_to_files(patch_text)
+        return format_apply_result(planned_patch)
+    except PatchError as exc:
+        return _format_patch_error(exc, phase="apply")
+
+
+def format_apply_result(planned_patch: PlannedPatch) -> str:
+    add_count = sum(
+        1 for operation in planned_patch.operations if operation.kind == "add"
+    )
+    update_count = sum(
+        1 for operation in planned_patch.operations if operation.kind == "update"
+    )
+    delete_count = sum(
+        1 for operation in planned_patch.operations if operation.kind == "delete"
+    )
+    lines = [
+        (
+            "[OK] Applied patch: "
+            + f"{len(planned_patch.operations)} 个文件；Add {add_count}、"
+            + f"Update {update_count}、Delete {delete_count}。"
+        )
+    ]
+    labels = {"add": "Add", "update": "Update", "delete": "Delete"}
+    for operation in planned_patch.operations:
+        lines.append(
+            f"- {labels[operation.kind]}: {operation.path} "
+            + f"(+{operation.stats.added_lines}/-{operation.stats.deleted_lines}, "
+            + f"final {operation.final_size} bytes)"
+        )
+    return "\n".join(lines)
 
 
 def _plan_operation(
@@ -634,7 +732,8 @@ def _plan_operation(
 def _plan_add_operation(
     validated_operation: ValidatedOperation, add_newline: str
 ) -> PlannedOperation:
-    if validated_operation.target_path.exists():
+    original_snapshot = _capture_target_snapshot(validated_operation.target_path)
+    if original_snapshot.exists:
         raise PatchError(TARGET_EXISTS, "新增目标已经存在；请改用 Update File")
     final_bytes = _build_add_file_bytes(
         validated_operation.operation.added_lines, add_newline
@@ -651,13 +750,17 @@ def _plan_add_operation(
             added_lines=line_count,
             deleted_lines=0,
         ),
+        target_path=validated_operation.target_path,
+        relative_path=validated_operation.relative_path,
+        final_bytes=final_bytes,
+        original_snapshot=original_snapshot,
     )
 
 
 def _plan_update_operation(validated_operation: ValidatedOperation) -> PlannedOperation:
-    existing_content = validated_operation.existing_content
-    if existing_content is None:
-        raise PatchError(TARGET_MISSING, "更新目标缺少可读取的现有内容")
+    existing_content, original_snapshot = _read_existing_utf8_with_snapshot(
+        validated_operation.target_path
+    )
     result = apply_update_hunks(existing_content, validated_operation.operation.hunks)
     _ensure_final_size(result.final_bytes)
     return PlannedOperation(
@@ -665,13 +768,16 @@ def _plan_update_operation(validated_operation: ValidatedOperation) -> PlannedOp
         path=validated_operation.relative_path.as_posix(),
         final_size=len(result.final_bytes),
         stats=result.stats,
+        target_path=validated_operation.target_path,
+        relative_path=validated_operation.relative_path,
+        final_bytes=result.final_bytes,
+        original_snapshot=original_snapshot,
     )
 
 
 def _plan_delete_operation(validated_operation: ValidatedOperation) -> PlannedOperation:
-    target_stat = validated_operation.target_path.stat()
-    existing_content = _read_existing_utf8(
-        validated_operation.target_path, target_stat.st_size
+    existing_content, original_snapshot = _read_existing_utf8_with_snapshot(
+        validated_operation.target_path
     )
     original_lines, _newline = _split_existing_lines(existing_content.text)
     deleted_lines = len(original_lines)
@@ -685,6 +791,10 @@ def _plan_delete_operation(validated_operation: ValidatedOperation) -> PlannedOp
             added_lines=0,
             deleted_lines=deleted_lines,
         ),
+        target_path=validated_operation.target_path,
+        relative_path=validated_operation.relative_path,
+        final_bytes=None,
+        original_snapshot=original_snapshot,
     )
 
 
@@ -708,8 +818,8 @@ def _ensure_final_size(final_bytes: bytes) -> None:
         raise PatchError(FINAL_TOO_LARGE, "计划输出超过 1 MiB 限制")
 
 
-def _format_patch_error(error: PatchError) -> str:
-    return f"{error.to_error_result()} 上下文: dry-run 阶段。提示: {_error_hint(error.code)}"
+def _format_patch_error(error: PatchError, *, phase: str) -> str:
+    return f"{error.to_error_result()} 上下文: {phase} 阶段。提示: {_error_hint(error.code)}"
 
 
 def _error_hint(code: str) -> str:
@@ -720,10 +830,255 @@ def _error_hint(code: str) -> str:
         FINAL_TOO_LARGE: "请拆分补丁或缩小目标文件内容。",
         HUNK_MISMATCH: "请根据目标文件当前内容重新生成 hunk。",
         HUNK_ORDER_ERROR: "请按原文件行号排序 hunk，且不要重叠。",
+        TARGET_CHANGED: "请重新读取目标文件后再生成补丁。",
+        ROLLBACK_FAILED: "请检查残留备份或临时文件后手动处理。",
+        APPLY_FAILED: "请检查权限、磁盘空间和目标路径状态。",
         INVALID_PATH: "请使用工作区内的安全相对路径。",
         SENSITIVE_PATH: "请不要通过补丁写入密钥、令牌或环境配置。",
     }
     return hints.get(code, "请检查补丁格式、路径和目标文件状态后重试。")
+
+
+def _capture_target_snapshot(target_path: Path) -> TargetSnapshot:
+    try:
+        target_stat = target_path.lstat()
+    except FileNotFoundError:
+        return TargetSnapshot(exists=False, is_symlink=False, is_directory=False)
+
+    is_symlink = stat.S_ISLNK(target_stat.st_mode)
+    is_directory = stat.S_ISDIR(target_stat.st_mode)
+    file_hash = None
+    snapshot_stat = target_stat
+    if stat.S_ISREG(target_stat.st_mode) and not is_symlink:
+        existing_bytes, descriptor_stat = _read_regular_file_bytes_no_follow(
+            target_path
+        )
+        if _stat_identity(target_stat) != _stat_identity(descriptor_stat):
+            raise PatchError(TARGET_CHANGED, "目标文件在快照读取期间发生变化")
+        file_hash = hashlib.sha256(existing_bytes).hexdigest()
+        snapshot_stat = descriptor_stat
+    return TargetSnapshot(
+        exists=True,
+        is_symlink=is_symlink,
+        is_directory=is_directory,
+        size=snapshot_stat.st_size,
+        mtime_ns=snapshot_stat.st_mtime_ns,
+        mode=snapshot_stat.st_mode,
+        sha256=file_hash,
+    )
+
+
+def _pre_write_revalidation_hook(planned_patch: PlannedPatch) -> None:
+    _ = planned_patch
+
+
+def _before_target_open_hook(target_path: Path) -> None:
+    _ = target_path
+
+
+def _after_existing_bytes_read_hook(target_path: Path) -> None:
+    _ = target_path
+
+
+def _before_apply_operation_hook(operation: PlannedOperation) -> None:
+    _ = operation
+
+
+def _revalidate_planned_patch(planned_patch: PlannedPatch) -> None:
+    for operation in planned_patch.operations:
+        _validate_existing_ancestors(
+            planned_patch.workspace_root, operation.relative_path
+        )
+        target_path = _resolve_workspace_target(
+            planned_patch.workspace_root, operation.relative_path
+        )
+        if target_path != operation.target_path:
+            raise PatchError(
+                TARGET_CHANGED, f"{operation.path}: 目标路径解析结果已变化"
+            )
+        current_snapshot = _capture_target_snapshot(operation.target_path)
+        if current_snapshot != operation.original_snapshot:
+            raise PatchError(
+                TARGET_CHANGED, f"{operation.path}: 目标文件在验证后发生变化"
+            )
+
+
+def _apply_planned_operation(operation: PlannedOperation, state: _ApplyState) -> None:
+    _before_apply_operation_hook(operation)
+    if operation.kind == "add":
+        _apply_add_operation(operation, state)
+    elif operation.kind == "update":
+        _apply_update_operation(operation, state)
+    else:
+        _apply_delete_operation(operation, state)
+
+
+def _apply_add_operation(operation: PlannedOperation, state: _ApplyState) -> None:
+    if operation.final_bytes is None:
+        raise PatchError(APPLY_FAILED, f"{operation.path}: 新增内容缺失")
+    _create_missing_parent_dirs(operation.target_path.parent, state)
+    temp_path = _write_temp_file(
+        operation.target_path, operation.final_bytes, 0o644, state
+    )
+    os.replace(temp_path, operation.target_path)
+    state.applied_operations.append(
+        _AppliedOperation(
+            kind="add",
+            target_path=operation.target_path,
+            added_path=operation.target_path,
+        )
+    )
+
+
+def _apply_update_operation(operation: PlannedOperation, state: _ApplyState) -> None:
+    if operation.final_bytes is None:
+        raise PatchError(APPLY_FAILED, f"{operation.path}: 更新内容缺失")
+    backup_path = _make_sidecar_path(operation.target_path, "backup", state)
+    os.replace(operation.target_path, backup_path)
+    state.applied_operations.append(
+        _AppliedOperation(
+            kind="update", target_path=operation.target_path, backup_path=backup_path
+        )
+    )
+    mode = (
+        operation.original_snapshot.mode
+        if operation.original_snapshot.mode is not None
+        else 0o644
+    )
+    temp_path = _write_temp_file(
+        operation.target_path, operation.final_bytes, mode, state
+    )
+    os.replace(temp_path, operation.target_path)
+
+
+def _apply_delete_operation(operation: PlannedOperation, state: _ApplyState) -> None:
+    backup_path = _make_sidecar_path(operation.target_path, "backup", state)
+    os.replace(operation.target_path, backup_path)
+    state.applied_operations.append(
+        _AppliedOperation(
+            kind="delete", target_path=operation.target_path, backup_path=backup_path
+        )
+    )
+
+
+def _create_missing_parent_dirs(parent_path: Path, state: _ApplyState) -> None:
+    workspace_root = Path.cwd().resolve()
+    try:
+        relative_parent = parent_path.relative_to(workspace_root)
+    except ValueError as exc:
+        raise PatchError(INVALID_PATH, "父目录位于工作区之外") from exc
+
+    current = workspace_root
+    for part in relative_parent.parts:
+        current = current / part
+        try:
+            current_stat = current.lstat()
+        except FileNotFoundError:
+            current.mkdir()
+            state.created_dirs.append(current)
+            continue
+        if stat.S_ISLNK(current_stat.st_mode):
+            raise PatchError(TARGET_IS_SYMLINK, "父目录不能是符号链接")
+        if not stat.S_ISDIR(current_stat.st_mode):
+            raise PatchError(INVALID_PATH, "父路径组件不是目录")
+
+
+def _make_sidecar_path(target_path: Path, label: str, state: _ApplyState) -> Path:
+    file_descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{target_path.name}.apply-patch-{label}-",
+        dir=str(target_path.parent),
+    )
+    os.close(file_descriptor)
+    sidecar_path = Path(raw_path)
+    state.temp_paths.append(sidecar_path)
+    return sidecar_path
+
+
+def _write_temp_file(
+    target_path: Path, content: bytes, mode: int, state: _ApplyState
+) -> Path:
+    file_descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{target_path.name}.apply-patch-temp-",
+        dir=str(target_path.parent),
+    )
+    temp_path = Path(raw_path)
+    state.temp_paths.append(temp_path)
+    try:
+        with os.fdopen(file_descriptor, "wb") as temp_file:
+            _ = temp_file.write(content)
+        os.chmod(temp_path, stat.S_IMODE(mode))
+    except Exception:
+        _remove_path_if_exists(temp_path)
+        raise
+    return temp_path
+
+
+def _rollback_apply_state(state: _ApplyState) -> None:
+    failures: list[str] = []
+    for operation in reversed(state.applied_operations):
+        try:
+            _rollback_operation(operation)
+        except Exception:
+            failures.append(_safe_display_path(operation.target_path))
+
+    for temp_path in reversed(state.temp_paths):
+        try:
+            _remove_path_if_exists(temp_path)
+        except Exception:
+            failures.append(_safe_display_path(temp_path))
+
+    for directory_path in reversed(state.created_dirs):
+        try:
+            if directory_path.exists():
+                directory_path.rmdir()
+        except OSError:
+            pass
+        except Exception:
+            failures.append(_safe_display_path(directory_path))
+
+    if failures:
+        residuals = ", ".join(failures[:5])
+        raise PatchError(ROLLBACK_FAILED, f"回滚失败；残留路径: {residuals}")
+
+
+def _rollback_operation(operation: _AppliedOperation) -> None:
+    if operation.kind == "add":
+        if operation.added_path is not None:
+            _remove_path_if_exists(operation.added_path)
+        return
+
+    if operation.backup_path is None or not operation.backup_path.exists():
+        raise PatchError(ROLLBACK_FAILED, "备份文件缺失，无法回滚")
+    _remove_path_if_exists(operation.target_path)
+    os.replace(operation.backup_path, operation.target_path)
+
+
+def _cleanup_success_paths(state: _ApplyState) -> None:
+    failures: list[str] = []
+    for temp_path in reversed(state.temp_paths):
+        try:
+            _remove_path_if_exists(temp_path)
+        except Exception:
+            failures.append(_safe_display_path(temp_path))
+    if failures:
+        residuals = ", ".join(failures[:5])
+        raise PatchError(
+            APPLY_FAILED, f"补丁已应用，但清理临时或备份文件失败；残留路径: {residuals}"
+        )
+
+
+def _remove_path_if_exists(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def _safe_display_path(path: Path) -> str:
+    try:
+        return path.relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return path.name
 
 
 def _validate_operation_path_syntax(raw_path: str) -> Path:
@@ -837,7 +1192,98 @@ def _validate_target_state(
 
 
 def _read_existing_utf8(target_path: Path, byte_size: int) -> ExistingFileContent:
-    existing_bytes = target_path.read_bytes()
+    existing_bytes, descriptor_stat = _read_regular_file_bytes_no_follow(target_path)
+    if descriptor_stat.st_size != byte_size:
+        raise PatchError(TARGET_CHANGED, "目标文件在读取期间发生变化")
+    return _decode_existing_utf8_bytes(existing_bytes, descriptor_stat.st_size)
+
+
+def _read_existing_utf8_with_snapshot(
+    target_path: Path,
+) -> tuple[ExistingFileContent, TargetSnapshot]:
+    try:
+        before_stat = target_path.lstat()
+    except FileNotFoundError as exc:
+        raise PatchError(TARGET_MISSING, "目标文件在读取前已不存在") from exc
+
+    if stat.S_ISLNK(before_stat.st_mode):
+        raise PatchError(TARGET_IS_SYMLINK, "目标不能是符号链接")
+    if stat.S_ISDIR(before_stat.st_mode):
+        raise PatchError(TARGET_IS_DIRECTORY, "目标不能是目录")
+    if not stat.S_ISREG(before_stat.st_mode):
+        raise PatchError(INVALID_PATH, "目标必须是普通文件")
+    if before_stat.st_size > TARGET_FILE_LIMIT_BYTES:
+        raise PatchError(TARGET_TOO_LARGE, "目标文件超过 1 MiB 限制")
+
+    existing_bytes, descriptor_stat = _read_regular_file_bytes_no_follow(target_path)
+    if _stat_identity(before_stat) != _stat_identity(descriptor_stat):
+        raise PatchError(TARGET_CHANGED, "目标文件在读取期间发生变化")
+
+    _after_existing_bytes_read_hook(target_path)
+    after_bytes, after_stat = _read_regular_file_bytes_no_follow(target_path)
+    if (
+        _stat_identity(descriptor_stat) != _stat_identity(after_stat)
+        or after_bytes != existing_bytes
+    ):
+        raise PatchError(TARGET_CHANGED, "目标文件在读取期间发生变化")
+
+    snapshot = TargetSnapshot(
+        exists=True,
+        is_symlink=False,
+        is_directory=False,
+        size=descriptor_stat.st_size,
+        mtime_ns=descriptor_stat.st_mtime_ns,
+        mode=descriptor_stat.st_mode,
+        sha256=hashlib.sha256(existing_bytes).hexdigest(),
+    )
+    return (
+        _decode_existing_utf8_bytes(existing_bytes, descriptor_stat.st_size),
+        snapshot,
+    )
+
+
+def _read_regular_file_bytes_no_follow(
+    target_path: Path,
+) -> tuple[bytes, os.stat_result]:
+    nofollow = cast(int | None, getattr(os, "O_NOFOLLOW", None))
+    if nofollow is None:
+        raise PatchError(TARGET_IS_SYMLINK, "当前平台不支持安全的无跟随读取")
+
+    _before_target_open_hook(target_path)
+    try:
+        file_descriptor = os.open(target_path, os.O_RDONLY | nofollow)
+    except FileNotFoundError as exc:
+        raise PatchError(TARGET_MISSING, "目标文件不存在") from exc
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise PatchError(TARGET_IS_SYMLINK, "目标不能是符号链接") from exc
+        if exc.errno == errno.ENOTDIR:
+            raise PatchError(INVALID_PATH, "目标父路径不是目录") from exc
+        raise PatchError(
+            APPLY_FAILED, f"无法安全读取目标文件：{type(exc).__name__}"
+        ) from exc
+
+    try:
+        descriptor_stat = os.fstat(file_descriptor)
+        if stat.S_ISDIR(descriptor_stat.st_mode):
+            raise PatchError(TARGET_IS_DIRECTORY, "目标不能是目录")
+        if not stat.S_ISREG(descriptor_stat.st_mode):
+            raise PatchError(INVALID_PATH, "目标必须是普通文件")
+
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(file_descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks), descriptor_stat
+    finally:
+        os.close(file_descriptor)
+
+
+def _decode_existing_utf8_bytes(
+    existing_bytes: bytes, byte_size: int
+) -> ExistingFileContent:
     has_utf8_bom = existing_bytes.startswith(UTF8_BOM)
     payload = existing_bytes[len(UTF8_BOM) :] if has_utf8_bom else existing_bytes
     try:
@@ -846,6 +1292,16 @@ def _read_existing_utf8(target_path: Path, byte_size: int) -> ExistingFileConten
         raise PatchError(INVALID_UTF8, "目标文件不是有效的 UTF-8 文本") from exc
     return ExistingFileContent(
         text=text, byte_size=byte_size, has_utf8_bom=has_utf8_bom
+    )
+
+
+def _stat_identity(path_stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        path_stat.st_mode,
+        path_stat.st_size,
+        path_stat.st_mtime_ns,
+        path_stat.st_ino,
+        path_stat.st_dev,
     )
 
 
@@ -1032,15 +1488,6 @@ def _is_blank_separator(line: str) -> bool:
     return not line.strip()
 
 
-def _placeholder_result(patch_text: str, dry_run: bool) -> str:
-    mode = "dry-run" if dry_run else "apply"
-    detail = (
-        f"apply_patch 的 {mode} 模式尚未实现；"
-        + f"已收到 {len(patch_text)} 个字符的补丁文本。"
-    )
-    return _format_error(NOT_IMPLEMENTED, detail)
-
-
 @tool
 def apply_patch(patch_text: str, dry_run: bool = False) -> str:
     """安全地将补丁应用到仓库文件系统。
@@ -1051,7 +1498,7 @@ def apply_patch(patch_text: str, dry_run: bool = False) -> str:
     """
     if dry_run:
         return _dry_run_patch_result(patch_text)
-    return _placeholder_result(patch_text=patch_text, dry_run=dry_run)
+    return _apply_patch_result(patch_text)
 
 
 __all__ = [
@@ -1061,6 +1508,8 @@ __all__ = [
     "validate_patch_text_size",
     "plan_patch_dry_run",
     "format_dry_run_result",
+    "apply_patch_to_files",
+    "format_apply_result",
     "apply_update_hunks",
     "build_updated_file_bytes",
     "PatchDocument",
@@ -1072,6 +1521,7 @@ __all__ = [
     "ValidatedPatch",
     "LineStats",
     "UpdateApplyResult",
+    "TargetSnapshot",
     "PlannedOperation",
     "PlannedPatch",
     "PatchError",
@@ -1098,6 +1548,8 @@ __all__ = [
     "NOOP_PATCH",
     "UNSAFE_PATH",
     "APPLY_FAILED",
+    "TARGET_CHANGED",
+    "ROLLBACK_FAILED",
     "PATCH_TEXT_LIMIT_BYTES",
     "TARGET_FILE_LIMIT_BYTES",
     "ERROR_CODES",
