@@ -921,6 +921,98 @@ def test_delete_symlink_swap_during_target_read_is_not_followed(
     assert symlink_source.read_bytes() == b"delete\n"
 
 
+def _swap_dir_to_outside_symlink(directory_path: Path, outside_path: Path) -> Path:
+    real_dir = directory_path.with_name(f"{directory_path.name}-real")
+    _ = directory_path.rename(real_dir)
+    directory_path.symlink_to(outside_path, target_is_directory=True)
+    return real_dir
+
+
+def test_update_parent_symlink_swap_after_revalidation_does_not_escape_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    workspace_dir = tmp_path / "dir"
+    outside_dir = tmp_path / "outside"
+    workspace_dir.mkdir()
+    outside_dir.mkdir()
+    target = workspace_dir / "target.txt"
+    outside_target = outside_dir / "target.txt"
+    _ = target.write_bytes(b"old\n")
+    _ = outside_target.write_bytes(b"outside\n")
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Update File: dir/target.txt",
+        "@@ -1,1 +1,1 @@",
+        "-old",
+        "+new",
+        "*** End Patch",
+    )
+    real_dirs: list[Path] = []
+
+    def swap_parent_after_revalidation(operation: PlannedOperation) -> None:
+        if operation.path == "dir/target.txt" and not real_dirs:
+            real_dirs.append(_swap_dir_to_outside_symlink(workspace_dir, outside_dir))
+
+    monkeypatch.setattr(
+        apply_patch_module,
+        "_before_apply_operation_hook",
+        swap_parent_after_revalidation,
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(
+        (f"[Error] {TARGET_IS_SYMLINK}:", f"[Error] {TARGET_CHANGED}:")
+    )
+    assert real_dirs
+    assert workspace_dir.is_symlink()
+    assert outside_target.read_bytes() == b"outside\n"
+    assert (real_dirs[0] / "target.txt").read_bytes() == b"old\n"
+    assert not list(outside_dir.glob(".target.txt.apply-patch-*"))
+
+
+def test_delete_parent_symlink_swap_after_revalidation_does_not_escape_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    workspace_dir = tmp_path / "dir"
+    outside_dir = tmp_path / "outside"
+    workspace_dir.mkdir()
+    outside_dir.mkdir()
+    target = workspace_dir / "target.txt"
+    outside_target = outside_dir / "target.txt"
+    _ = target.write_bytes(b"delete\n")
+    _ = outside_target.write_bytes(b"outside\n")
+    patch_text = _patch(
+        "*** Begin Patch", "*** Delete File: dir/target.txt", "*** End Patch"
+    )
+    real_dirs: list[Path] = []
+
+    def swap_parent_after_revalidation(operation: PlannedOperation) -> None:
+        if operation.path == "dir/target.txt" and not real_dirs:
+            real_dirs.append(_swap_dir_to_outside_symlink(workspace_dir, outside_dir))
+
+    monkeypatch.setattr(
+        apply_patch_module,
+        "_before_apply_operation_hook",
+        swap_parent_after_revalidation,
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False}))
+
+    assert result.startswith(
+        (f"[Error] {TARGET_IS_SYMLINK}:", f"[Error] {TARGET_CHANGED}:")
+    )
+    assert real_dirs
+    assert workspace_dir.is_symlink()
+    assert outside_target.read_bytes() == b"outside\n"
+    assert (real_dirs[0] / "target.txt").read_bytes() == b"delete\n"
+    assert not list(outside_dir.glob(".target.txt.apply-patch-*"))
+
+
 def test_tool_list_exposes_apply_patch_and_not_write_file():
     tools_module = importlib.import_module("src.tools")
     exported_tool_list = cast(list[_NamedTool], tools_module.tool_list)

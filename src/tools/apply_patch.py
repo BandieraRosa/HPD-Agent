@@ -233,6 +233,8 @@ class _HunkPlan:
 class _AppliedOperation:
     kind: OperationKind
     target_path: Path
+    workspace_root: Path
+    relative_path: Path
     backup_path: Path | None = None
     added_path: Path | None = None
 
@@ -683,7 +685,7 @@ def apply_patch_to_files(patch_text: str) -> PlannedPatch:
 
     try:
         for operation in planned_patch.operations:
-            _apply_planned_operation(operation, state)
+            _apply_planned_operation(operation, state, planned_patch.workspace_root)
     except PatchError:
         _rollback_apply_state(state)
         raise
@@ -901,58 +903,85 @@ def _before_apply_operation_hook(operation: PlannedOperation) -> None:
 
 def _revalidate_planned_patch(planned_patch: PlannedPatch) -> None:
     for operation in planned_patch.operations:
-        _validate_existing_ancestors(
-            planned_patch.workspace_root, operation.relative_path
-        )
-        target_path = _resolve_workspace_target(
-            planned_patch.workspace_root, operation.relative_path
-        )
-        if target_path != operation.target_path:
-            raise PatchError(
-                TARGET_CHANGED, f"{operation.path}: 目标路径解析结果已变化"
-            )
-        current_snapshot = _capture_target_snapshot(operation.target_path)
-        if current_snapshot != operation.original_snapshot:
-            raise PatchError(
-                TARGET_CHANGED, f"{operation.path}: 目标文件在验证后发生变化"
-            )
+        _revalidate_planned_operation(planned_patch.workspace_root, operation)
 
 
-def _apply_planned_operation(operation: PlannedOperation, state: _ApplyState) -> None:
+def _revalidate_planned_operation(
+    workspace_root: Path, operation: PlannedOperation
+) -> None:
+    _validate_existing_ancestors(workspace_root, operation.relative_path)
+    target_path = _resolve_workspace_target(workspace_root, operation.relative_path)
+    if target_path != operation.target_path:
+        raise PatchError(TARGET_CHANGED, f"{operation.path}: 目标路径解析结果已变化")
+    current_snapshot = _capture_target_snapshot(operation.target_path)
+    if current_snapshot != operation.original_snapshot:
+        raise PatchError(TARGET_CHANGED, f"{operation.path}: 目标文件在验证后发生变化")
+
+
+def _validate_workspace_mutation_path(workspace_root: Path, path: Path) -> None:
+    try:
+        relative_path = path.relative_to(workspace_root)
+    except ValueError as exc:
+        raise PatchError(INVALID_PATH, "路径位于工作区之外") from exc
+
+    _validate_existing_ancestors(workspace_root, relative_path)
+    resolved_path = _resolve_workspace_target(workspace_root, relative_path)
+    if resolved_path != path.resolve(strict=False):
+        raise PatchError(TARGET_CHANGED, "路径解析结果已变化")
+
+
+def _apply_planned_operation(
+    operation: PlannedOperation, state: _ApplyState, workspace_root: Path
+) -> None:
     _before_apply_operation_hook(operation)
+    _revalidate_planned_operation(workspace_root, operation)
     if operation.kind == "add":
-        _apply_add_operation(operation, state)
+        _apply_add_operation(operation, state, workspace_root)
     elif operation.kind == "update":
-        _apply_update_operation(operation, state)
+        _apply_update_operation(operation, state, workspace_root)
     else:
-        _apply_delete_operation(operation, state)
+        _apply_delete_operation(operation, state, workspace_root)
 
 
-def _apply_add_operation(operation: PlannedOperation, state: _ApplyState) -> None:
+def _apply_add_operation(
+    operation: PlannedOperation, state: _ApplyState, workspace_root: Path
+) -> None:
     if operation.final_bytes is None:
         raise PatchError(APPLY_FAILED, f"{operation.path}: 新增内容缺失")
-    _create_missing_parent_dirs(operation.target_path.parent, state)
+    _create_missing_parent_dirs(operation.target_path.parent, state, workspace_root)
     temp_path = _write_temp_file(
-        operation.target_path, operation.final_bytes, 0o644, state
+        operation.target_path, operation.final_bytes, 0o644, state, workspace_root
     )
+    _validate_workspace_mutation_path(workspace_root, operation.target_path)
     os.replace(temp_path, operation.target_path)
     state.applied_operations.append(
         _AppliedOperation(
             kind="add",
             target_path=operation.target_path,
+            workspace_root=workspace_root,
+            relative_path=operation.relative_path,
             added_path=operation.target_path,
         )
     )
 
 
-def _apply_update_operation(operation: PlannedOperation, state: _ApplyState) -> None:
+def _apply_update_operation(
+    operation: PlannedOperation, state: _ApplyState, workspace_root: Path
+) -> None:
     if operation.final_bytes is None:
         raise PatchError(APPLY_FAILED, f"{operation.path}: 更新内容缺失")
-    backup_path = _make_sidecar_path(operation.target_path, "backup", state)
+    backup_path = _make_sidecar_path(
+        operation.target_path, "backup", state, workspace_root
+    )
+    _revalidate_planned_operation(workspace_root, operation)
     os.replace(operation.target_path, backup_path)
     state.applied_operations.append(
         _AppliedOperation(
-            kind="update", target_path=operation.target_path, backup_path=backup_path
+            kind="update",
+            target_path=operation.target_path,
+            workspace_root=workspace_root,
+            relative_path=operation.relative_path,
+            backup_path=backup_path,
         )
     )
     mode = (
@@ -961,23 +990,34 @@ def _apply_update_operation(operation: PlannedOperation, state: _ApplyState) -> 
         else 0o644
     )
     temp_path = _write_temp_file(
-        operation.target_path, operation.final_bytes, mode, state
+        operation.target_path, operation.final_bytes, mode, state, workspace_root
     )
+    _validate_workspace_mutation_path(workspace_root, operation.target_path)
     os.replace(temp_path, operation.target_path)
 
 
-def _apply_delete_operation(operation: PlannedOperation, state: _ApplyState) -> None:
-    backup_path = _make_sidecar_path(operation.target_path, "backup", state)
+def _apply_delete_operation(
+    operation: PlannedOperation, state: _ApplyState, workspace_root: Path
+) -> None:
+    backup_path = _make_sidecar_path(
+        operation.target_path, "backup", state, workspace_root
+    )
+    _revalidate_planned_operation(workspace_root, operation)
     os.replace(operation.target_path, backup_path)
     state.applied_operations.append(
         _AppliedOperation(
-            kind="delete", target_path=operation.target_path, backup_path=backup_path
+            kind="delete",
+            target_path=operation.target_path,
+            workspace_root=workspace_root,
+            relative_path=operation.relative_path,
+            backup_path=backup_path,
         )
     )
 
 
-def _create_missing_parent_dirs(parent_path: Path, state: _ApplyState) -> None:
-    workspace_root = Path.cwd().resolve()
+def _create_missing_parent_dirs(
+    parent_path: Path, state: _ApplyState, workspace_root: Path
+) -> None:
     try:
         relative_parent = parent_path.relative_to(workspace_root)
     except ValueError as exc:
@@ -998,7 +1038,10 @@ def _create_missing_parent_dirs(parent_path: Path, state: _ApplyState) -> None:
             raise PatchError(INVALID_PATH, "父路径组件不是目录")
 
 
-def _make_sidecar_path(target_path: Path, label: str, state: _ApplyState) -> Path:
+def _make_sidecar_path(
+    target_path: Path, label: str, state: _ApplyState, workspace_root: Path
+) -> Path:
+    _validate_workspace_mutation_path(workspace_root, target_path)
     file_descriptor, raw_path = tempfile.mkstemp(
         prefix=f".{target_path.name}.apply-patch-{label}-",
         dir=str(target_path.parent),
@@ -1010,8 +1053,13 @@ def _make_sidecar_path(target_path: Path, label: str, state: _ApplyState) -> Pat
 
 
 def _write_temp_file(
-    target_path: Path, content: bytes, mode: int, state: _ApplyState
+    target_path: Path,
+    content: bytes,
+    mode: int,
+    state: _ApplyState,
+    workspace_root: Path,
 ) -> Path:
+    _validate_workspace_mutation_path(workspace_root, target_path)
     file_descriptor, raw_path = tempfile.mkstemp(
         prefix=f".{target_path.name}.apply-patch-temp-",
         dir=str(target_path.parent),
@@ -1021,6 +1069,7 @@ def _write_temp_file(
     try:
         with os.fdopen(file_descriptor, "wb") as temp_file:
             _ = temp_file.write(content)
+        _validate_workspace_mutation_path(workspace_root, temp_path)
         os.chmod(temp_path, stat.S_IMODE(mode))
     except Exception:
         _remove_path_if_exists(temp_path)
@@ -1059,12 +1108,21 @@ def _rollback_apply_state(state: _ApplyState) -> None:
 def _rollback_operation(operation: _AppliedOperation) -> None:
     if operation.kind == "add":
         if operation.added_path is not None:
+            _validate_workspace_mutation_path(
+                operation.workspace_root, operation.added_path
+            )
             _remove_path_if_exists(operation.added_path)
         return
 
-    if operation.backup_path is None or not operation.backup_path.exists():
+    if operation.backup_path is None:
+        raise PatchError(ROLLBACK_FAILED, "备份文件缺失，无法回滚")
+    _validate_workspace_mutation_path(operation.workspace_root, operation.backup_path)
+    _validate_workspace_mutation_path(operation.workspace_root, operation.target_path)
+    if not operation.backup_path.exists():
         raise PatchError(ROLLBACK_FAILED, "备份文件缺失，无法回滚")
     _remove_path_if_exists(operation.target_path)
+    _validate_workspace_mutation_path(operation.workspace_root, operation.backup_path)
+    _validate_workspace_mutation_path(operation.workspace_root, operation.target_path)
     os.replace(operation.backup_path, operation.target_path)
 
 
@@ -1083,6 +1141,7 @@ def _cleanup_success_paths(state: _ApplyState) -> None:
 
 
 def _remove_path_if_exists(path: Path) -> None:
+    _validate_workspace_mutation_path(Path.cwd().resolve(), path)
     try:
         path.unlink()
     except FileNotFoundError:
