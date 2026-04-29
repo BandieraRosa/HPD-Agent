@@ -1,8 +1,23 @@
 # pyright: reportUnknownVariableType=false
-"""更安全的补丁工具骨架。
+"""安全的 v1 apply_patch 工具。
 
-本模块定义更安全补丁工具的 LangChain 入口。v1 解析器、校验器、
-dry-run 规划器与文件系统应用逻辑会在后续任务中逐步补齐。
+v1 格式只接受自定义补丁信封：以 ``*** Begin Patch`` 开始、以
+``*** End Patch`` 结束，中间按文件声明 ``*** Add File: path``、
+``*** Update File: path`` 或 ``*** Delete File: path``。Add 行必须以
+``+`` 开头；Update 使用显式计数的 ``@@ -old,count +new,count @@`` hunk，
+并按行号和原内容做严格匹配。
+
+安全边界：仅允许工作区内相对路径；拒绝上级目录跳转、``.git``、敏感
+凭据路径、符号链接、目录、非 UTF-8 目标、超限补丁和超过 1 MiB 的最终
+Add/Update 输出。真实应用会在写入前重新校验目标快照，失败时尝试同进程回滚；不承诺崩溃恢复或 fsync 持久性。
+
+``dry_run=True`` 会完整解析、校验并规划 Add/Update/Delete 摘要，但不会
+写入文件，也不会创建目录。
+
+明确非目标（non-goals）：no git diff compatibility；``git diff`` /
+``diff --git``、``---``、``+++`` 片段会被拒绝。no fuzzy matching；hunk
+行号或原内容不匹配时不会模糊查找替代位置。no terminal hardening；
+terminal 调用的安全边界仍在 ``src.llm.client``，本工具不修改 terminal 逻辑。
 """
 
 from dataclasses import dataclass, replace
@@ -1490,11 +1505,15 @@ def _is_blank_separator(line: str) -> bool:
 
 @tool
 def apply_patch(patch_text: str, dry_run: bool = False) -> str:
-    """安全地将补丁应用到仓库文件系统。
+    """解析并应用 v1 apply_patch 补丁。
+
+    v1 只支持 ``*** Begin Patch`` / ``*** End Patch`` 信封和 Add、Update、
+    Delete 文件操作；不兼容 ``git diff`` 或 ``diff --git``，也不做 fuzzy
+    matching。``dry_run=True`` 只返回规划摘要，不写入文件或创建目录。
 
     Args:
-        patch_text: 后续实现中需要校验并应用的补丁文本。
-        dry_run: 为 True 时，后续版本只报告计划变更而不写入文件。
+        patch_text: 需要校验、规划并可选应用的 v1 补丁文本。
+        dry_run: 为 True 时只执行 dry-run；为 False 时执行真实写入和回滚保护。
     """
     if dry_run:
         return _dry_run_patch_result(patch_text)

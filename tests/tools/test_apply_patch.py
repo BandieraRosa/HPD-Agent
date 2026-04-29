@@ -1,9 +1,10 @@
 # pyright: reportUnknownMemberType=false
 import importlib
+import inspect
 import os
 from pathlib import Path
 import stat
-from typing import Callable, cast
+from typing import Callable, Protocol, cast
 
 import pytest
 
@@ -43,6 +44,10 @@ from src.tools.apply_patch import (
     parse_patch_text,
     validate_patch_document,
 )
+
+
+class _NamedTool(Protocol):
+    name: str
 
 
 apply_patch_module = importlib.import_module("src.tools.apply_patch")
@@ -916,6 +921,47 @@ def test_delete_symlink_swap_during_target_read_is_not_followed(
     assert symlink_source.read_bytes() == b"delete\n"
 
 
+def test_tool_list_exposes_apply_patch_and_not_write_file():
+    tools_module = importlib.import_module("src.tools")
+    exported_tool_list = cast(list[_NamedTool], tools_module.tool_list)
+    tool_names = [tool.name for tool in exported_tool_list]
+
+    assert tool_names == ["read_file", "apply_patch", "terminal"]
+    assert "write_file" not in tool_names
+
+
+def test_write_file_module_importable_after_tool_list_deexposure():
+    write_file_module = importlib.import_module("src.tools.write_file")
+    write_file_tool = cast(_NamedTool, write_file_module.write_file)
+
+    assert write_file_tool.name == "write_file"
+
+
+def test_apply_patch_tool_langchain_invoke_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Add File: new.txt",
+        "+created",
+        "*** End Patch",
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": True}))
+
+    assert result.startswith("[DRY-RUN OK]")
+    assert "Add 1" in result
+    assert not (tmp_path / "new.txt").exists()
+
+
+def test_apply_patch_tool_schema_only_patch_text_and_dry_run():
+    tool_args = cast(dict[str, object], apply_patch.args)
+
+    assert set(tool_args) == {"patch_text", "dry_run"}
+
+
 def test_apply_patch_tool_name_is_stable():
     assert apply_patch.name == "apply_patch"
 
@@ -927,7 +973,116 @@ def test_apply_patch_tool_args_include_public_scaffold_parameters():
     assert "dry_run" in tool_args
 
 
-def test_apply_patch_non_dry_run_parse_error_is_structured():
+def test_apply_patch_documentation_describes_v1_scope_boundaries():
+    module_docs = apply_patch_module.__doc__ or ""
+    tool_description = apply_patch.description or ""
+    docs = f"{module_docs}\n{tool_description}"
+
+    assert "v1" in docs
+    assert "*** Begin Patch" in docs
+    assert "*** Add File" in docs
+    assert "*** Update File" in docs
+    assert "*** Delete File" in docs
+    assert "dry_run=True" in docs
+    assert "no git diff compatibility" in docs
+    assert "diff --git" in docs or "git diff" in docs
+    assert "no fuzzy matching" in docs
+    assert "no terminal hardening" in docs
+    assert "terminal" in docs.lower()
+
+
+def test_scope_boundaries_keep_terminal_logic_and_write_file_available():
+    from src.llm import client as llm_client
+    from src.tools import tool_list
+    from src.tools.write_file import write_file
+
+    tool_names = [tool.name for tool in tool_list]
+    client_source = inspect.getsource(llm_client)
+
+    assert tool_names == ["read_file", "apply_patch", "terminal"]
+    assert "safe_prefixes" in client_source
+    assert "terminal" in client_source
+    assert write_file.name == "write_file"
+
+
+def test_apply_patch_tool_direct_function_call_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Add File: direct.txt",
+        "+created",
+        "*** End Patch",
+    )
+    direct_apply = getattr(apply_patch, "func", None)
+
+    assert direct_apply is not None
+    result = cast(Callable[..., str], direct_apply)(patch_text=patch_text, dry_run=True)
+
+    assert result.startswith("[DRY-RUN OK]")
+    assert "direct.txt" in result
+    assert not (tmp_path / "direct.txt").exists()
+
+
+def test_success_output_summarizes_without_full_file_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    hidden_content = "SUCCESS_CONTENT_SHOULD_NOT_APPEAR"
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Add File: summary.txt",
+        f"+{hidden_content}",
+        "*** End Patch",
+    )
+
+    dry_result = cast(
+        str, apply_patch.invoke({"patch_text": patch_text, "dry_run": True})
+    )
+    apply_result = cast(
+        str, apply_patch.invoke({"patch_text": patch_text, "dry_run": False})
+    )
+
+    for result in (dry_result, apply_result):
+        assert "summary.txt" in result
+        assert hidden_content not in result
+        assert patch_text not in result
+    assert (tmp_path / "summary.txt").read_text(
+        encoding="utf-8"
+    ) == f"{hidden_content}\n"
+
+
+def test_dry_run_rejects_update_final_too_large(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(apply_patch_module, "TARGET_FILE_LIMIT_BYTES", 5)
+    target = tmp_path / "file.txt"
+    _ = target.write_text("old\n", encoding="utf-8")
+    patch_text = _patch(
+        "*** Begin Patch",
+        "*** Update File: file.txt",
+        "@@ -1,1 +1,1 @@",
+        "-old",
+        "+123456",
+        "*** End Patch",
+    )
+
+    result = cast(str, apply_patch.invoke({"patch_text": patch_text, "dry_run": True}))
+
+    assert result.startswith(f"[Error] {FINAL_TOO_LARGE}:")
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def test_apply_patch_non_dry_run_parse_error_is_structured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
     result = cast(
         str,
         apply_patch.invoke(
