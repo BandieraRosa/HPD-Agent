@@ -10,6 +10,7 @@ The coordinator agent calls this to make the "plan" decision.
 """
 
 from src.core.models import PlannerResult
+from src.core.observability import get_tracer, TokenTrackerCallback
 from src.llm import get_structured_llm, PLANNER_PROMPT
 from src.nodes.scheduler import check_circle
 
@@ -22,26 +23,30 @@ async def decompose(query: str) -> tuple[list, PlannerResult]:
     Returns:
         Tuple of (tasks list, PlannerResult).
     """
-    for attempt in range(1, 4):
-        classifier = get_structured_llm(PlannerResult)
-        result: PlannerResult = await classifier.ainvoke(
-            PLANNER_PROMPT.format(query=query)
-        )
-        tasks = result.sub_tasks
+    tracer = get_tracer()
+    with tracer.span("decompose") as span_id:
+        for attempt in range(1, 4):
+            classifier = get_structured_llm(PlannerResult)
+            result: PlannerResult = await classifier.ainvoke(
+                PLANNER_PROMPT.format(query=query)
+            )
+            tasks = result.sub_tasks
 
-        if check_circle(tasks):
-            print(f"[Planning] 尝试 {attempt}/3 检测到 DAG 循环，重新生成...")
-            if attempt == 3:
-                raise RuntimeError(
-                    f"DAG 分解在 3 次尝试后仍产生循环图，请检查原始查询是否合理。\n"
-                    f"子任务列表: {[(t.id, t.name, t.depends) for t in tasks]}"
-                )
-            continue
+            if check_circle(tasks):
+                print(f"[Planning] 尝试 {attempt}/3 检测到 DAG 循环，重新生成...")
+                if attempt == 3:
+                    raise RuntimeError(
+                        f"DAG 分解在 3 次尝试后仍产生循环图，请检查原始查询是否合理。\n"
+                        f"子任务列表: {[(t.id, t.name, t.depends) for t in tasks]}"
+                    )
+                continue
 
-        _log_tasks(tasks)
-        return list(tasks), result
+            _log_tasks(tasks)
+            tin, tout, model = TokenTrackerCallback.snapshot()
+            tracer.record_tokens(span_id, tokens_in=tin, tokens_out=tout, model=model)
+            return list(tasks), result
 
-    raise RuntimeError("Decomposer exhausted retry attempts without returning.")
+        raise RuntimeError("Decomposer exhausted retry attempts without returning.")
 
 
 def _log_tasks(tasks: list) -> None:

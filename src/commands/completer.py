@@ -85,6 +85,18 @@ class CommandCompleter(Completer):
                         yield Completion(sid, start_position=-len(parts[2]))
             return
 
+        # ── /trace sub-commands ───────────────────────────────────
+        if cmd == "/trace":
+            trace_subs = ("on", "off")
+            if len(parts) == 1:
+                for s in trace_subs:
+                    yield Completion(s, start_position=0)
+            elif len(parts) == 2:
+                for s in trace_subs:
+                    if s.startswith(sub):
+                        yield Completion(s, start_position=-len(sub))
+            return
+
         # ── Generic top-level command completion ────────────────────
         for c in COMMAND_HANDLERS:
             if c.startswith(text) and c != cmd:

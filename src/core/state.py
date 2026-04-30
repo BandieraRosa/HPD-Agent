@@ -49,3 +49,6 @@ class AgentState(TypedDict):
 
     agent_history: Sequence[AgentMeta]
     """Record of which agents were invoked and on which sub-tasks."""
+
+    parent_span_id: str | None
+    """Parent span ID for tracing. Propagated from the caller so child spans form a tree."""

@@ -25,9 +25,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.agents import QueryAgent
+from src.core.observability import get_tracer, TokenTrackerCallback
 from src.llm import get_llm
 from src.commands import COMMAND_HANDLERS, handle_command, get_completer
 from src.commands.handlers.tokens import get_used_tokens, MAX_TOKENS
+from src.commands.handlers.trace import is_trace_enabled
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
@@ -82,7 +84,14 @@ async def _read_line(prompt: str) -> str:
     return await loop.run_in_executor(None, _read_input, prompt)
 
 
+# ----------------------------------------------------------------------
+# Main loop
+# ----------------------------------------------------------------------
+
+
 async def run_loop():
+    tracer = get_tracer()
+
     print(r"""
             ██╗  ██╗ ██████╗  ██████╗
             ██║  ██║ ██╔══██╗ ██╔══██╗
@@ -117,18 +126,39 @@ async def run_loop():
         if tokens > MAX_TOKENS:
             print("Token limit reached. Please create a new conversation or run /summary to summarize the conversation.")
             continue
-        result = await agent.ainvoke(query, agent._current_session)
 
-        if result.get("synthesis_prompt"):
-            print("\n─── 最终回答 ───\n")
-            llm = get_llm(stream=True)
-            streamed_answer = ""
-            async for chunk in llm.astream(result["synthesis_prompt"]):
-                t = getattr(chunk, "content", "") or ""
-                if t:
-                    streamed_answer += t
-                    print(t, end="", flush=True)
-            agent.store_streamed_answer(streamed_answer)
+        _tracing = is_trace_enabled()
+        if _tracing:
+            trace_id = tracer.start_trace(query=query, session_id=agent._current_session)
+            TokenTrackerCallback.reset()
+            print(f"\n[trace:{trace_id}] 开始处理...\n")
+
+        try:
+            result = await agent.ainvoke(query, agent._current_session)
+
+            # Complex path: stream synthesis, record tokens
+            if result.get("synthesis_prompt"):
+                print("\n─── 最终回答 ───\n")
+                if _tracing:
+                    with tracer.span("synthesis_stream") as synthesis_span_id:
+                        llm = get_llm(stream=True)
+                        streamed_answer = ""
+                        async for chunk in llm.astream(result["synthesis_prompt"]):
+                            t = getattr(chunk, "content", "") or ""
+                            if t:
+                                streamed_answer += t
+                                print(t, end="", flush=True)
+                        agent.store_streamed_answer(streamed_answer)
+                        tin, tout, model = TokenTrackerCallback.snapshot()
+                        tracer.record_tokens(synthesis_span_id, tokens_in=tin, tokens_out=tout, model=model)
+        finally:
+            # ── Observability: end trace ───────────────────────────────
+            if _tracing:
+                record = tracer.end_trace()
+                if record is not None:
+                    record.print_console()
+                    path = record.save()
+                    print(f"\n  Trace saved: {path}")
 
         print()
 
