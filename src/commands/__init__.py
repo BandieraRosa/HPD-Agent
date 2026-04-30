@@ -22,6 +22,7 @@ from src.commands.handlers import (
     run_skim,
     run_summary,
     run_tokens,
+    run_trace,
 )
 
 from src.commands.completer import CommandCompleter, get_completer
@@ -43,6 +44,7 @@ COMMAND_HANDLERS: dict[str, callable] = {
     "/skim":       run_skim,
     "/summary":    run_summary,
     "/tokens":     run_tokens,
+    "/trace":      run_trace,
 }
 
 

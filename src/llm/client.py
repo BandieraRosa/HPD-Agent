@@ -2,15 +2,75 @@
 
 Active model is read from the profile store singleton so that /model
 switches take effect for every LLM call without code changes.
+
+Token usage is tracked via monkey-patching so every LLM call (including
+structured-output and streaming via astream_events) contributes tokens to
+the global TokenTrackerCallback accumulator.
 """
 
 import os
 
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
+from langchain_openai.chat_models.base import BaseChatOpenAI
 from pydantic import BaseModel
 
+from src.core.observability import TokenTrackerCallback
+
+# ----------------------------------------------------------------------
+# Token-tracker (global singleton, populated by monkey-patches below)
+# ----------------------------------------------------------------------
+_token_callback = TokenTrackerCallback()
+
+
+# ----------------------------------------------------------------------
+# Monkey-patch 1: _agenerate — captures non-streaming + structured-output calls
+# ----------------------------------------------------------------------
+def _install_token_tracker() -> None:
+    original_agenerate = ChatOpenAI._agenerate
+
+    async def tracked_agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        result = await original_agenerate(self, messages, stop, run_manager, **kwargs)
+        for gen in result.generations:
+            msg: AIMessage = gen.message
+            usage = getattr(msg, "usage_metadata", None) or {}
+            tin  = usage.get("input_tokens", 0)
+            tout = usage.get("output_tokens", 0)
+            if tin or tout:
+                model = getattr(self, "model_name", "") or getattr(self, "model", "") or ""
+                _token_callback._accumulate(tin, tout, model)
+        return result
+
+    ChatOpenAI._agenerate = tracked_agenerate
+
+    # ------------------------------------------------------------------
+    # Monkey-patch 2: _convert_chunk_to_generation_chunk — captures streaming tokens
+    # This method is called per chunk during astream_events, and usage
+    # metadata (including final totals) is embedded in the last chunk.
+    # ------------------------------------------------------------------
+    original_convert = BaseChatOpenAI._convert_chunk_to_generation_chunk
+
+    def tracked_convert(self, chunk, default_chunk_class, base_generation_info=None):
+        result = original_convert(self, chunk, default_chunk_class, base_generation_info)
+        chunk_usage = chunk.get("usage") if isinstance(chunk, dict) else None
+        if chunk_usage:
+            tin = chunk_usage.get("input_tokens", 0)
+            tout = chunk_usage.get("output_tokens", 0)
+            if tin or tout:
+                model = getattr(self, "model_name", "") or getattr(self, "model", "") or ""
+                _token_callback._accumulate(tin, tout, model)
+        return result
+
+    BaseChatOpenAI._convert_chunk_to_generation_chunk = tracked_convert
+
+
+_install_token_tracker()
+
+
+# ----------------------------------------------------------------------
+# Rest of client.py
+# ----------------------------------------------------------------------
 _seen_tool_call_ids: set[str] = set()
 """Track which tool_call IDs have already been executed to prevent duplicate calls."""
 
@@ -67,6 +127,7 @@ def get_llm(
         base_url=actual_base,
         stream=stream,
         extra_body=actual_eb,
+        request_timeout=60,
     )
 
 
@@ -124,10 +185,20 @@ async def invoke_with_tools(
     messages = [HumanMessage(content=prompt)]
     tool_results: list[str] = []
     full_content = ""
+    active_model = ""
 
     max_turns = 20
     for _ in range(max_turns):
         response = await llm.ainvoke(messages)
+
+        usage = getattr(response, "usage_metadata", None) or {}
+        if usage:
+            input_tokens  = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+            if input_tokens or output_tokens:
+                active_model = getattr(llm, "model_name", "")
+                _token_callback._accumulate(input_tokens, output_tokens, active_model)
+
         content = getattr(response, "content", "") or ""
         tool_calls = getattr(response, "tool_calls", []) or []
 
@@ -169,7 +240,6 @@ async def invoke_with_tools(
                     if cmd.strip().startswith(safe_prefixes) or cmd.strip().startswith("cd "):
                         result = tool.invoke(args)
                         success = not str(result).startswith("[Error]")
-                        # print(f"[DEBUG] Tool '{name}' succeeded (safe command)")
                     else:
                         confirm = input("    Confirm execution? (y/N): ").strip().lower()
                         if confirm != "y":
@@ -178,17 +248,14 @@ async def invoke_with_tools(
                         else:
                             result = tool.invoke(args)
                             success = not str(result).startswith("[Error]") and not str(result).startswith("[Cancelled]")
-                            # print(f"[DEBUG] Tool '{name}' {'succeeded' if success else 'failed'}")
                             if not success:
                                 print(f"[DEBUG] Tool '{name}' failed: {result}")
                 else:
-                    # print(f"[DEBUG] Tool '{name}' called")
                     result = tool.invoke(args)
                     success = not str(result).startswith("[Error]")
                     print(f"[DEBUG] Tool '{name}' {'succeeded' if success else 'failed'}")
             messages.append(AIMessage(content="", tool_calls=[call]))
             messages.append(ToolMessage(name=name, content=str(result), tool_call_id=call_id))
-            # Include args in the log so downstream can parse which files were read
             args_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) if args else ""
             tool_results.append(f"[Tool: {name}({args_str})]\n{result}")
 

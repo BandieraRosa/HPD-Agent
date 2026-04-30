@@ -10,6 +10,7 @@ from .sessions import run as run_sessions
 from .skim import run as run_skim
 from .summary import run as run_summary
 from .tokens import run as run_tokens
+from .trace import run as run_trace
 
 __all__ = [
     "run_context",
@@ -22,4 +23,5 @@ __all__ = [
     "run_skim",
     "run_summary",
     "run_tokens",
+    "run_trace",
 ]

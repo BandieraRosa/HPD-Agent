@@ -12,6 +12,7 @@ import uuid
 
 from src.core.models import AgentMeta, TaskOutput
 from src.core.state import AgentState
+from src.core.observability import get_tracer, TokenTrackerCallback
 from src.nodes.planning import decompose as decompose_node
 
 
@@ -26,38 +27,44 @@ async def coordinate(state: AgentState) -> AgentState:
         - ``decomposition_result``: raw LLM planner result
         - ``agent_history``: metadata about coordinator invocation
     """
-    coordinator_id = f"coordinator-{uuid.uuid4().hex[:8]}"
+    tracer = get_tracer()
+    with tracer.span("coordinator") as parent_span_id:
+        coordinator_id = f"coordinator-{uuid.uuid4().hex[:8]}"
 
-    print(f"\n[CoordinatorAgent {coordinator_id}] 收到复杂任务，开始规划...")
+        print(f"\n[CoordinatorAgent {coordinator_id}] 收到复杂任务，开始规划...")
 
-    tasks, result = await decompose_node(state["input"])
+        tasks, result = await decompose_node(state["input"])
 
-    coordinator_meta = AgentMeta(
-        role="coordinator",
-        agent_id=coordinator_id,
-        sub_task_id=None,
-        result_summary=f"分解为 {len(tasks)} 个子任务",
-    )
+        tin, tout, model = TokenTrackerCallback.snapshot()
+        tracer.record_tokens(parent_span_id, tokens_in=tin, tokens_out=tout, model=model)
 
-    return {
-        "tasks": tasks,
-        "decomposition_result": result,
-        "outputs": [
-            *state.get("outputs", []),
-            TaskOutput(
-                node="coordinator",
-                result={
-                    "coordinator_id": coordinator_id,
-                    "total_sub_task_count": result.total_sub_task_count,
-                    "sub_tasks": [
-                        {"id": t.id, "name": t.name, "depends": t.depends}
-                        for t in tasks
-                    ],
-                },
-            ),
-        ],
-        "agent_history": [
-            *state.get("agent_history", []),
-            coordinator_meta,
-        ],
-    }
+        coordinator_meta = AgentMeta(
+            role="coordinator",
+            agent_id=coordinator_id,
+            sub_task_id=None,
+            result_summary=f"分解为 {len(tasks)} 个子任务",
+        )
+
+        return {
+            "tasks": tasks,
+            "decomposition_result": result,
+            "outputs": [
+                *state.get("outputs", []),
+                TaskOutput(
+                    node="coordinator",
+                    result={
+                        "coordinator_id": coordinator_id,
+                        "total_sub_task_count": result.total_sub_task_count,
+                        "sub_tasks": [
+                            {"id": t.id, "name": t.name, "depends": t.depends}
+                            for t in tasks
+                        ],
+                    },
+                ),
+            ],
+            "agent_history": [
+                *state.get("agent_history", []),
+                coordinator_meta,
+            ],
+            "parent_span_id": parent_span_id,
+        }

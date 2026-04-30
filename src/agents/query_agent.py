@@ -1,6 +1,8 @@
 import asyncio
 import re
 
+from src.core.observability import get_tracer
+
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from src.core.state import AgentState
@@ -125,6 +127,7 @@ class QueryAgent:
             "final_response": "",
             "synthesis_prompt": "",
             "conversation_history": ctx,
+            "parent_span_id": "",
         }
         config = {"configurable": {"thread_id": sid}}
         result = await self._app.ainvoke(initial_state, config=config)

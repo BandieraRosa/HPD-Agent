@@ -23,7 +23,7 @@ async def execute(task_id: int, task_name: str, context: str) -> SubTaskOutput:
     """Decide to execute a sub-task, delegating to the execution node.
 
     The decision logic (difficulty assessment + LLM call) is in nodes/execution.py.
-    This shell only adds agent metadata.
+    Token recording is handled inside execution.py via the tracer span there.
     """
     return await _execute_node(task_id, task_name, context)
 
