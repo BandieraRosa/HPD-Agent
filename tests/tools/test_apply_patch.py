@@ -2577,6 +2577,81 @@ class TestToolMetadata:
         # dry_run 行为
         assert "dry_run" in docs
 
+    def test_tool_description_is_self_contained(self):
+        """工具描述必须自包含完整工具规范,这样 system prompt 不需要重复。
+
+        这一测试保护"prompt 不复制工具规范"的设计:tool description 必须
+        覆盖协议、tag 用法、关键错误码及处置——LLM 看到 tool 即可,不需要
+        额外指引。
+        """
+        desc = apply_patch.description or ""
+        # 协议核心
+        for marker in [
+            "*** Begin Patch",
+            "*** End Patch",
+            "*** Add File",
+            "*** Update File",
+            "*** Replace File",
+            "*** Delete File",
+            "<<<<<<< SEARCH",
+            ">>>>>>> REPLACE",
+            "<<<<<<< CONTENT",
+            ">>>>>>> END",
+        ]:
+            assert marker in desc, f"tool description 缺少 {marker!r}"
+        # 标签化块用法
+        assert "tag" in desc, "tool description 必须解释 tag 用法"
+        # 决策规则:何时加 tag
+        assert "决策规则" in desc or "什么时候" in desc or "默认就该加 tag" in desc
+        # 关键错误码及处置
+        for code in [
+            "SEARCH_NOT_FOUND",
+            "AMBIGUOUS_MATCH",
+            "MALFORMED_SECTION",
+            "TARGET_EXISTS",
+            "EMPTY_SEARCH_NON_EMPTY_FILE",
+            "NOOP_PATCH",
+        ]:
+            assert code in desc, f"tool description 缺少错误码 {code} 的说明"
+
+    def test_sub_task_prompt_does_not_duplicate_protocol(self):
+        """SUB_TASK_PROMPT 不应复制工具语法——这些应该来自 tool description。
+
+        反向保护:如果 SUB_TASK_PROMPT 又把协议搬回来,说明 prompt 在膨胀。
+        """
+        # 通过 src 包导入项目的 prompts
+        try:
+            prompts_module = importlib.import_module("src.prompts")
+        except ImportError:
+            try:
+                prompts_module = importlib.import_module("prompts")
+            except ImportError:
+                pytest.skip("prompts 模块不可用")
+                return
+
+        prompt = getattr(prompts_module, "SUB_TASK_PROMPT", None)
+        if prompt is None:
+            pytest.skip("SUB_TASK_PROMPT 不存在")
+            return
+
+        # 渲染后字符长度应该控制在 1500 字符以内
+        rendered = prompt.format(context="X", task_id="1", task_name="Y")
+        assert len(rendered) < 1500, (
+            f"SUB_TASK_PROMPT 渲染后 {len(rendered)} 字符,超出 1500 限制;"
+            f"工具语法说明应该放在 apply_patch 的 docstring 里。"
+        )
+        # 不应该重复贴出协议示例
+        forbidden_in_prompt = [
+            "<<<<<<< SEARCH",
+            "<<<<<<< CONTENT",
+            "*** Begin Patch",
+        ]
+        for marker in forbidden_in_prompt:
+            assert marker not in rendered, (
+                f"SUB_TASK_PROMPT 不应包含 {marker!r}——这属于工具规范,"
+                "应该放在 apply_patch 的 docstring(tool description)里。"
+            )
+
     def test_apply_patch_tool_direct_function_call(
         self,
         tmp_path: Path,

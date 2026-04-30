@@ -2112,7 +2112,7 @@ def _format_patch_error(error: PatchError, *, phase: str) -> str:
 # ──────────────── 工具入口 ────────────────
 @tool
 def apply_patch(patch_text: str, dry_run: bool = True) -> str:
-    """解析并应用 v2 apply_patch 补丁(SEARCH/REPLACE 风格)。
+    """解析并应用 v2 apply_patch 补丁。修改文本文件的标准工具,不接受 git diff 格式。
 
     协议要点
     ~~~~~~~~
@@ -2120,33 +2120,104 @@ def apply_patch(patch_text: str, dry_run: bool = True) -> str:
     每个补丁以 ``*** Begin Patch`` 开始,以 ``*** End Patch`` 结束。中间是
     一个或多个文件操作:
 
-    * ``*** Add File: path`` —— 新建文件(目标必须不存在),用 CONTENT 块。
-    * ``*** Update File: path`` —— 局部修改,用一个或多个 SEARCH/REPLACE 块。
+    * ``*** Add File: path``     —— 新建文件(目标必须不存在),用 CONTENT 块。
+    * ``*** Update File: path``  —— 局部修改,用一个或多个 SEARCH/REPLACE 块。
     * ``*** Replace File: path`` —— 整体覆盖现有文件,用 CONTENT 块。
-    * ``*** Delete File: path`` —— 删除文件,无正文。
+    * ``*** Delete File: path``  —— 删除文件(目标必须存在),无正文。
 
     SEARCH/REPLACE 块::
 
         <<<<<<< SEARCH
-        old line(s) — 必须在文件中按行精确且唯一出现
+        要查找的原文(在文件中按行精确且唯一出现)
         =======
-        new line(s)
+        替换后的内容
         >>>>>>> REPLACE
 
     CONTENT 块::
 
         <<<<<<< CONTENT
-        file body — 原样写入,不需要 + 前缀
+        文件正文(原样写入,无 + 前缀)
         >>>>>>> END
 
-    不支持 ``diff --git`` / ``---`` / ``+++`` / ``@@`` 等 git diff 格式;
-    不做 fuzzy matching;SEARCH 不唯一时报 AMBIGUOUS_MATCH,不存在时报
-    SEARCH_NOT_FOUND——按错误信息扩大上下文或重读目标即可。
+    完整示例::
+
+        *** Begin Patch
+        *** Update File: src/app.py
+        <<<<<<< SEARCH
+        def greet(name):
+            return 'hi'
+        =======
+        def greet(name: str) -> str:
+            return f'hi {name}'
+        >>>>>>> REPLACE
+        *** Add File: src/util.py
+        <<<<<<< CONTENT
+        def noop():
+            pass
+        >>>>>>> END
+        *** Delete File: legacy.py
+        *** End Patch
+
+    标签化块(块内字面含 close 标记时)
+    -----------------------------------
+
+    块内可以原样含有 ``*** Begin Patch`` / ``*** End Patch`` /
+    ``*** Add File:`` 等字面文本,无需转义——解析器进入块后只识别该块自己的
+    close 标记。
+
+    但如果块**内容**需要含字面 ``>>>>>>> END`` / ``>>>>>>> REPLACE`` /
+    ``=======``,必须给块加 tag。tag 是任意非空白 token,open 与 close 用
+    相同 tag::
+
+        *** Add File: doc.md
+        <<<<<<< CONTENT mydoc
+        CONTENT 块格式:
+        <<<<<<< CONTENT
+        内容
+        >>>>>>> END
+        SEARCH 块格式:
+        <<<<<<< SEARCH
+        old
+        =======
+        new
+        >>>>>>> REPLACE
+        >>>>>>> END mydoc
+
+    决策规则:任何写关于 apply_patch / 补丁工具的文档/教程内容,默认就该
+    加 tag。tag 不会写入目标文件。
+
+    错误处理
+    --------
+
+    出错时返回 ``[Error][APPLY_PATCH][CODE]`` 开头的结构化文本,字段含
+    ``message`` / ``phase`` / ``line`` / ``file`` / ``block`` / ``expected`` /
+    ``actual`` / ``hint``。按 hint 修正即可,不要切换工具。常见错误:
+
+    * ``SEARCH_NOT_FOUND`` —— SEARCH 内容与文件不匹配。重读目标对应区域,
+      用精确原文(空格、缩进、标点都要一致)重写 SEARCH。
+    * ``AMBIGUOUS_MATCH`` —— SEARCH 在文件中匹配多次。在 SEARCH 前后加几
+      行原文使其唯一。
+    * ``MALFORMED_SECTION`` —— 多见于块被字面 close 标记提前关闭。如果
+      hint 提到「上一个块被关闭」,给该块加 tag。
+    * ``TARGET_EXISTS`` —— Add File 目标已存在。改用 Replace File。
+    * ``EMPTY_SEARCH_NON_EMPTY_FILE`` —— 空 SEARCH 只在空文件合法。要在
+      空文件写内容用 Replace File,要整体覆盖也用 Replace File。
+    * ``NOOP_PATCH`` —— 补丁不会改变内容。先确认目标是否已满足要求。
+
+    工作约束
+    --------
+
+    * SEARCH 必须按行与目标文件逐字符精确匹配(包括空格、缩进、标点)。
+    * 一个 Update File 中多个 SEARCH/REPLACE 块顺序无关,但匹配区间不能重叠。
+    * 不要写行号、不要算计数、不要写 ``@@``;SEARCH 自身就是定位依据。
+    * 工具自动保留原文件的换行风格(LF / CRLF)与末尾换行习惯。
+    * 在空文件写入或整体覆盖,优先用 Replace File 而非 Update File。
 
     Args:
         patch_text: v2 补丁文本。
-        dry_run: 为 True 时只校验并返回规划摘要,不写入文件;为 False 时
-            真实写入,并在失败时尝试回滚。
+        dry_run: True 只校验并返回规划摘要,不写入;False 真实写入,失败时
+            尝试同进程回滚。标准流程是先 dry_run=True 校验,再 dry_run=False
+            写入。
     """
     if dry_run:
         return _dry_run_patch_result(patch_text)
