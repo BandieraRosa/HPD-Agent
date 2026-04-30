@@ -4,7 +4,8 @@ Token accounting follows the actual LLM context payload consumed in the synthesi
   1. conversation_history (messages)           ← always counted
   2. sub_task_outputs (accumulated DAG results) ← not stored in messages, but
      consumed by the synthesizer when building the final answer
-  3. current synthesis prompt (if building)    ← the in-flight prompt
+  3. tool schemas (bind_tools overhead)         ← sent with every tool-bound call
+  4. current synthesis prompt (if building)    ← the in-flight prompt
 
 System prompts (assessment, planner, synthesis instructions) are NOT counted as
 part of the rolling context window — they are injected per-call and not
@@ -12,6 +13,7 @@ persisted.  Only the accumulating conversation state is tracked here.
 """
 
 import concurrent.futures
+import json
 
 from src.agents import QueryAgent
 from src.memory.context import ConversationContext
@@ -44,6 +46,23 @@ def _count_tokens(text: str) -> int:
     return len(enc.encode(text))
 
 
+def _count_tool_schema_tokens() -> int:
+    """Count tokens consumed by tool schemas from bind_tools().
+
+    These are injected into every tool-bound API request but not tracked
+    by the conversation context.
+    """
+    from src.tools import tool_list
+    from langchain_core.utils.function_calling import convert_to_openai_function
+
+    enc = _get_encoder()
+    total = 0
+    for t in tool_list:
+        fn = convert_to_openai_function(t)
+        total += len(enc.encode(json.dumps(fn, ensure_ascii=False)))
+    return total
+
+
 def _count_context_tokens(ctx: ConversationContext) -> int:
     """Count tokens for the rolling conversation_history (messages only).
 
@@ -64,6 +83,7 @@ def get_used_tokens(agent: QueryAgent) -> int:
       - All messages in conversation_history (what's actually sent to the LLM)
       - All accumulated sub_task_outputs (consumed by the synthesizer but not
         stored in messages, so invisible to the message-only counter)
+      - Tool schemas from bind_tools() (sent with every tool-bound call)
     """
     ctx = agent._get_context()
     total = _count_context_tokens(ctx)
@@ -72,6 +92,9 @@ def get_used_tokens(agent: QueryAgent) -> int:
     # but they are NOT stored in messages — they still consume the context window.
     for output in ctx.sub_task_outputs:
         total += _count_tokens(f"[子任务 {output['id']}: {output['name']}]\n{output['detail']}")
+
+    # Tool schemas are injected into every tool-bound API request.
+    total += _count_tool_schema_tokens()
 
     return total
 
@@ -96,13 +119,16 @@ def run(raw: str, agent: QueryAgent) -> bool:
             f"[子任务 {output['id']}: {output['name']}]\n{output['detail']}"
         )
 
+    # Count tool schemas (bind_tools overhead, sent with every tool-bound call)
+    tool_schema_tokens = _count_tool_schema_tokens()
+
     # Count tool summaries (informational — already included in messages)
     tool_tokens = 0
     for msg in ctx.messages:
         if msg.tool_summary:
             tool_tokens += _count_tokens(msg.tool_summary)
 
-    total = msg_tokens + sub_task_tokens
+    total = msg_tokens + sub_task_tokens + tool_schema_tokens
 
     pct = min(total / MAX_TOKENS, 1.0)
     bar = _format_bar(pct)
@@ -110,6 +136,7 @@ def run(raw: str, agent: QueryAgent) -> bool:
     print(f"=== Context Token Usage ===")
     print(f"  Conversation history:  {msg_tokens:>6} tokens  (messages)")
     print(f"  Sub-task results:     {sub_task_tokens:>6} tokens  (DAG outputs, not in messages)")
+    print(f"  Tool schemas:          {tool_schema_tokens:>6} tokens  (bind_tools overhead)")
     print(f"  Total:                {total:>6} tokens")
     print(f"  Model window:        {MAX_TOKENS:>6} tokens")
     print(f"  Usage:              {bar} {pct * 100:.1f}%")
