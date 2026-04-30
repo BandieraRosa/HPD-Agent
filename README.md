@@ -30,27 +30,27 @@ Level-1 Assessment (simple / complex)
 
 ### Multi-Agent System
 
-| Agent | Role |
-|---|---|
-| **QueryAgent** | Public facade. Manages sessions, boots with system info, exposes the REPL. |
-| **CoordinatorAgent** | Decomposes complex queries into a DAG of sub-tasks with cycle detection. |
-| **ExpertAgent** | Executes individual sub-tasks, routing each through Level-2 assessment. |
+| Agent                | Role                                                                       |
+| -------------------- | -------------------------------------------------------------------------- |
+| **QueryAgent**       | Public facade. Manages sessions, boots with system info, exposes the REPL. |
+| **CoordinatorAgent** | Decomposes complex queries into a DAG of sub-tasks with cycle detection.   |
+| **ExpertAgent**      | Executes individual sub-tasks, routing each through Level-2 assessment.    |
 
 ### Agent Tools
 
-| Tool | Description |
-|---|---|
-| `read_file(path, lines=100)` | Read file contents with optional line limit |
-| `write_file(filename, content, append=True)` | Write or append to files |
-| `terminal(cmd)` | Execute shell commands; read-only commands are always allowed |
-| `project_scanner()` | Scan the current project structure and tech stack |
+| Tool                                         | Description                                                   |
+| -------------------------------------------- | ------------------------------------------------------------- |
+| `read_file(path, lines=100)`                 | Read file contents with optional line limit                   |
+| `write_file(filename, content, append=True)` | Write or append to files                                      |
+| `terminal(cmd)`                              | Execute shell commands; read-only commands are always allowed |
+| `project_scanner()`                          | Scan the current project structure and tech stack             |
 
 ### Routing Levels
 
-| Level | Classification | Path |
-|---|---|---|
-| **Level 1** | `simple` / `complex` | Simple → direct answer; Complex → Coordinator |
-| **Level 2** | `easy` / `hard` | Easy → single tool call; Hard → multi-step reasoning |
+| Level       | Classification       | Path                                                 |
+| ----------- | -------------------- | ---------------------------------------------------- |
+| **Level 1** | `simple` / `complex` | Simple → direct answer; Complex → Coordinator        |
+| **Level 2** | `easy` / `hard`      | Easy → single tool call; Hard → multi-step reasoning |
 
 ---
 
@@ -58,21 +58,21 @@ Level-1 Assessment (simple / complex)
 
 All commands are entered at the REPL prompt.
 
-| Command | Description |
-|---|---|
-| `/help` | Show all available commands |
-| `/context [-c N] [-d]` | View the conversation context window |
-| `/exit` | Exit the agent |
-| `/model list` | List all saved LLM model configurations |
-| `/model create` | Interactively create a new model profile |
-| `/model switch <name>` | Switch to a different model configuration |
-| `/sessions list` | List all sessions for the current project |
-| `/sessions create` | Create a new session |
-| `/sessions switch <id>` | Switch to a different session |
-| `/sessions delete <id>` | Delete a session |
-| `/skim [path]` | Scan the project and generate `HPD.MD` knowledge summary |
-| `/summary` | Summarize context and reset the context window (saves tokens) |
-| `/tokens` | Show current token usage |
+| Command                 | Description                                                   |
+| ----------------------- | ------------------------------------------------------------- |
+| `/help`                 | Show all available commands                                   |
+| `/context [-c N] [-d]`  | View the conversation context window                          |
+| `/exit`                 | Exit the agent                                                |
+| `/model list`           | List all saved LLM model configurations                       |
+| `/model create`         | Interactively create a new model profile                      |
+| `/model switch <name>`  | Switch to a different model configuration                     |
+| `/sessions list`        | List all sessions for the current project                     |
+| `/sessions create`      | Create a new session                                          |
+| `/sessions switch <id>` | Switch to a different session                                 |
+| `/sessions delete <id>` | Delete a session                                              |
+| `/skim [path]`          | Scan the project and generate `HPD.MD` knowledge summary      |
+| `/summary`              | Summarize context and reset the context window (saves tokens) |
+| `/tokens`               | Show current token usage                                      |
 
 ---
 
@@ -112,14 +112,14 @@ CUSTOM_API_KEY=your_api_key_here
 
 Model configurations are stored in `~/.hpagent/models.json`. The default profile uses:
 
-| Field | Default | Description |
-|---|---|---|
-| `name` | `"default"` | Profile identifier |
-| `model` | `"deepseek-v4-flash"` | Model name |
-| `base_url` | `"https://api.deepseek.com"` | API endpoint |
-| `api_key` | (from env) | API key |
-| `temperature` | `0.0` | Sampling temperature |
-| `thinking` | `"disabled"` | Enable/disable model thinking |
+| Field         | Default                      | Description                   |
+| ------------- | ---------------------------- | ----------------------------- |
+| `name`        | `"default"`                  | Profile identifier            |
+| `model`       | `"deepseek-v4-flash"`        | Model name                    |
+| `base_url`    | `"https://api.deepseek.com"` | API endpoint                  |
+| `api_key`     | (from env)                   | API key                       |
+| `temperature` | `0.0`                        | Sampling temperature          |
+| `thinking`    | `"disabled"`                 | Enable/disable model thinking |
 
 Create additional profiles with `/model create`.
 

@@ -30,25 +30,25 @@
 
 ### 多智能体系统
 
-| 智能体 | 职责 |
-|---|---|
-| **QueryAgent** | 对外接口。管理会话，注入系统信息，启动 REPL。 |
-| **CoordinatorAgent** | 将复杂查询分解为带循环检测的 DAG 子任务图。 |
-| **ExpertAgent** | 执行各个子任务，通过二级评估路由。 |
+| 智能体               | 职责                                          |
+| -------------------- | --------------------------------------------- |
+| **QueryAgent**       | 对外接口。管理会话，注入系统信息，启动 REPL。 |
+| **CoordinatorAgent** | 将复杂查询分解为带循环检测的 DAG 子任务图。   |
+| **ExpertAgent**      | 执行各个子任务，通过二级评估路由。            |
 
 ### Agent 工具
 
-| 工具 | 说明 |
-|---|---|
-| `read_file(path, lines=100)` | 读取文件内容，支持行数限制 |
-| `write_file(filename, content, append=True)` | 写入或追加文件内容 |
-| `terminal(cmd)` | 执行 Shell 命令；只读命令始终允许执行 |
-| `project_scanner()` | 扫描项目结构和 tech stack |
+| 工具                                         | 说明                                  |
+| -------------------------------------------- | ------------------------------------- |
+| `read_file(path, lines=100)`                 | 读取文件内容，支持行数限制            |
+| `write_file(filename, content, append=True)` | 写入或追加文件内容                    |
+| `terminal(cmd)`                              | 执行 Shell 命令；只读命令始终允许执行 |
+| `project_scanner()`                          | 扫描项目结构和 tech stack             |
 
 ### 路由层级
 
-| 层级 | 分类 | 路径 |
-|---|---|---|
+| 层级     | 分类            | 路径                               |
+| -------- | --------------- | ---------------------------------- |
 | **一级** | `简单` / `复杂` | 简单 → 直接回答；复杂 → 协调智能体 |
 | **二级** | `简单` / `困难` | 简单 → 单工具调用；困难 → 多步推理 |
 
@@ -58,21 +58,21 @@
 
 在 REPL 提示符下输入以下命令。
 
-| 命令 | 说明 |
-|---|---|
-| `/help` | 显示所有可用命令 |
-| `/context [-c N] [-d]` | 查看当前对话上下文窗口 |
-| `/exit` | 退出 Agent |
-| `/model list` | 列出所有已保存的 LLM 模型配置 |
-| `/model create` | 交互式创建新的模型配置 |
-| `/model switch <name>` | 切换到指定的模型配置 |
-| `/sessions list` | 列出当前项目的所有会话 |
-| `/sessions create` | 创建新会话 |
-| `/sessions switch <id>` | 切换到指定会话 |
-| `/sessions delete <id>` | 删除指定会话 |
-| `/skim [path]` | 扫描项目并生成 `HPD.MD` 知识摘要文件 |
-| `/summary` | 总结上下文并重置窗口（节省 tokens） |
-| `/tokens` | 显示当前 token 使用量 |
+| 命令                    | 说明                                 |
+| ----------------------- | ------------------------------------ |
+| `/help`                 | 显示所有可用命令                     |
+| `/context [-c N] [-d]`  | 查看当前对话上下文窗口               |
+| `/exit`                 | 退出 Agent                           |
+| `/model list`           | 列出所有已保存的 LLM 模型配置        |
+| `/model create`         | 交互式创建新的模型配置               |
+| `/model switch <name>`  | 切换到指定的模型配置                 |
+| `/sessions list`        | 列出当前项目的所有会话               |
+| `/sessions create`      | 创建新会话                           |
+| `/sessions switch <id>` | 切换到指定会话                       |
+| `/sessions delete <id>` | 删除指定会话                         |
+| `/skim [path]`          | 扫描项目并生成 `HPD.MD` 知识摘要文件 |
+| `/summary`              | 总结上下文并重置窗口（节省 tokens）  |
+| `/tokens`               | 显示当前 token 使用量                |
 
 ---
 
@@ -112,14 +112,14 @@ CUSTOM_API_KEY=your_api_key_here
 
 模型配置存储在 `~/.hpagent/models.json`。默认配置：
 
-| 字段 | 默认值 | 说明 |
-|---|---|---|
-| `name` | `"default"` | 配置名称 |
-| `model` | `"deepseek-v4-flash"` | 模型名称 |
-| `base_url` | `"https://api.deepseek.com"` | API 端点 |
-| `api_key` |（来自环境变量）| API 密钥 |
-| `temperature` | `0.0` | 采样温度 |
-| `thinking` | `"disabled"` | 启用/禁用模型思考 |
+| 字段          | 默认值                       | 说明              |
+| ------------- | ---------------------------- | ----------------- |
+| `name`        | `"default"`                  | 配置名称          |
+| `model`       | `"deepseek-v4-flash"`        | 模型名称          |
+| `base_url`    | `"https://api.deepseek.com"` | API 端点          |
+| `api_key`     | （来自环境变量）             | API 密钥          |
+| `temperature` | `0.0`                        | 采样温度          |
+| `thinking`    | `"disabled"`                 | 启用/禁用模型思考 |
 
 使用 `/model create` 命令创建更多配置。
 
