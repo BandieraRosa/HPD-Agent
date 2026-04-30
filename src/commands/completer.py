@@ -85,6 +85,18 @@ class CommandCompleter(Completer):
                         yield Completion(sid, start_position=-len(parts[2]))
             return
 
+        # ── /context sub-commands ─────────────────────────────────
+        if cmd == "/context":
+            context_subs = ("clear",)
+            if len(parts) == 1:
+                for s in context_subs:
+                    yield Completion(s, start_position=0)
+            elif len(parts) == 2:
+                for s in context_subs:
+                    if s.startswith(sub):
+                        yield Completion(s, start_position=-len(sub))
+            return
+
         # ── /trace sub-commands ───────────────────────────────────
         if cmd == "/trace":
             trace_subs = ("on", "off")

@@ -67,14 +67,22 @@ def run(raw: str, agent: QueryAgent) -> bool:
     """Handle /context command.
 
     Args:
-        raw: Full command string, e.g. "/context -cd *".
+        raw: Full command string, e.g. "/context -cd *" or "/context clear".
         agent: QueryAgent instance (provides access to conversation contexts).
 
     Returns:
         False (never exits).
     """
-    ctx = agent._get_context()
     sub_args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+
+    if sub_args.strip().lower() == "clear":
+        ctx = agent._get_context()
+        ctx.messages.clear()
+        ctx.sub_task_outputs.clear()
+        print("上下文已清空。")
+        return False
+
+    ctx = agent._get_context()
     _print_context(ctx, sub_args=sub_args)
     return False
 
