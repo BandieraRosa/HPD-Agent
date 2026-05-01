@@ -1,17 +1,12 @@
-"""Reviewer node: evaluates sub-task quality and decides next action.
+"""Reviewer node: LLM-based quality assessment for sub-task outputs.
 
-Decisions:
-  - proceed     → all tasks are good, go to synthesizer
-  - re-execute  → some tasks need re-running
-  - add_tasks   → new analysis directions discovered
+This is a pure business-logic node — no round control, no decision mapping.
+The reviewer agent (src/agents/reviewer_agent.py) handles those concerns.
 """
 
-from src.core.models import ReviewerDecision, TaskOutput
-from src.core.state import AgentState
+from src.core.models import ReviewerDecision
 from src.core.observability import get_tracer, TokenTrackerCallback
 from src.llm import get_structured_llm, REVIEW_PROMPT
-
-MAX_REVIEW_ROUNDS = 2
 
 
 def _format_sub_task_results(outputs) -> str:
@@ -26,42 +21,26 @@ def _format_sub_task_results(outputs) -> str:
     return "\n\n".join(lines)
 
 
-async def reviewer(state: AgentState) -> AgentState:
-    """Evaluate sub-task quality and decide: proceed, re-execute, or add tasks."""
+async def review(query: str, outputs: list, current_round: int, max_rounds: int) -> ReviewerDecision:
+    """Call the LLM to evaluate sub-task quality.
+
+    Args:
+        query: The original user question.
+        outputs: List of SubTaskOutput objects to evaluate.
+        current_round: Current review round (0-based).
+        max_rounds: Maximum allowed review rounds.
+
+    Returns:
+        ReviewerDecision with overall_quality, task_reviews, re_execute_ids, etc.
+    """
     tracer = get_tracer()
-    parent_id = state.get("parent_span_id") or None
-
-    with tracer.span("reviewer", parent_id=parent_id) as span_id:
-        current_round = state.get("review_round", 0)
-        outputs = state.get("sub_task_outputs", [])
-
-        # Max rounds reached — force proceed
-        if current_round >= MAX_REVIEW_ROUNDS:
-            print(f"\n[Reviewer] 已达最大审查轮次 ({MAX_REVIEW_ROUNDS})，直接进入合成。")
-            return {
-                "review_decision": "proceed",
-                "re_execute_task_ids": [],
-                "review_feedback": "",
-                "review_round": current_round + 1,
-                "outputs": [
-                    *state.get("outputs", []),
-                    TaskOutput(
-                        node="reviewer",
-                        result={"decision": "proceed", "reason": "max_rounds_reached"},
-                    ),
-                ],
-                "parent_span_id": span_id,
-            }
-
-        # Call LLM for quality review
-        print(f"\n[Reviewer] 第 {current_round + 1} 轮质量审查中...")
-
+    with tracer.span("reviewer_llm") as span_id:
         results_text = _format_sub_task_results(outputs)
         prompt = REVIEW_PROMPT.format(
-            query=state["input"],
+            query=query,
             sub_task_results=results_text,
             round=current_round + 1,
-            max_rounds=MAX_REVIEW_ROUNDS,
+            max_rounds=max_rounds,
         )
 
         llm = get_structured_llm(ReviewerDecision)
@@ -70,57 +49,4 @@ async def reviewer(state: AgentState) -> AgentState:
         tin, tout, model = TokenTrackerCallback.snapshot()
         tracer.record_tokens(span_id, tokens_in=tin, tokens_out=tout, model=model)
 
-        # Map to enum
-        quality = decision.overall_quality
-        if quality == "needs_improvement":
-            review_decision = "re-execute"
-        elif quality == "needs_more_tasks":
-            review_decision = "add_tasks"
-        else:
-            review_decision = "proceed"
-
-        # Enforce max rounds at LLM level too
-        if review_decision != "proceed" and current_round + 1 >= MAX_REVIEW_ROUNDS:
-            print(f"[Reviewer] 已达最大轮次，覆盖为 proceed。")
-            review_decision = "proceed"
-            decision.re_execute_ids = []
-            decision.new_task_suggestions = []
-
-        re_ids = decision.re_execute_ids if review_decision == "re-execute" else []
-
-        # Print summary
-        for tr in decision.task_reviews:
-            icon = {"good": "✓", "weak": "△", "failed": "✗"}.get(tr.quality, "?")
-            print(f"  [{icon}] 子任务 {tr.sub_task_id}: {tr.quality} — {tr.reasoning}")
-
-        if review_decision == "re-execute":
-            print(f"[Reviewer] 要求重做子任务: {re_ids}")
-        elif review_decision == "add_tasks":
-            print(f"[Reviewer] 建议新增 {len(decision.new_task_suggestions)} 个子任务")
-        else:
-            print("[Reviewer] 质量合格，进入合成。")
-
-    return {
-        "review_decision": review_decision,
-        "re_execute_task_ids": re_ids,
-        "review_feedback": decision.feedback,
-        "review_round": current_round + 1,
-        "outputs": [
-            *state.get("outputs", []),
-            TaskOutput(
-                node="reviewer",
-                result={
-                    "decision": review_decision,
-                    "overall_quality": quality,
-                    "re_execute_ids": re_ids,
-                    "new_task_suggestions": decision.new_task_suggestions,
-                    "feedback": decision.feedback,
-                    "task_reviews": [
-                        {"id": tr.sub_task_id, "quality": tr.quality, "reasoning": tr.reasoning}
-                        for tr in decision.task_reviews
-                    ],
-                },
-            ),
-        ],
-        "parent_span_id": span_id,
-    }
+        return decision

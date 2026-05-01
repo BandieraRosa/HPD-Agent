@@ -2,7 +2,8 @@ from langgraph.graph import StateGraph, END
 
 from src.core.enums import TaskDifficulty
 from src.core.state import AgentState
-from src.nodes import first_level_assessment, direct_answer, scheduler_node, synthesizer, reviewer
+from src.nodes import first_level_assessment, direct_answer, scheduler_node, synthesizer
+from src.agents.reviewer_agent import reviewer
 
 
 def _route_after_assessment(state: AgentState) -> str:

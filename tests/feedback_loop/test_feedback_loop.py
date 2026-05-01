@@ -217,16 +217,17 @@ class TestReviewerNode(unittest.IsolatedAsyncioTestCase):
             "agent_history": [],
         }
 
+    @patch("src.agents.reviewer_agent.get_tracer")
     @patch("src.nodes.reviewer.get_tracer")
     @patch("src.nodes.reviewer.get_structured_llm")
-    async def test_max_rounds_forces_proceed(self, mock_get_llm, mock_tracer) -> None:
+    async def test_max_rounds_forces_proceed(self, mock_get_llm, mock_node_tracer, mock_tracer) -> None:
         """When review_round >= MAX_REVIEW_ROUNDS, reviewer forces proceed without LLM call."""
         mock_tracer.return_value.span.return_value.__enter__ = MagicMock(return_value=("", None))
         mock_tracer.return_value.span.return_value.__exit__ = MagicMock(return_value=False)
 
         state = self._make_state(round=2)  # MAX_REVIEW_ROUNDS = 2
 
-        from src.nodes.reviewer import reviewer
+        from src.agents.reviewer_agent import reviewer
         result = await reviewer(state)
 
         self.assertEqual(result["review_decision"], "proceed")
@@ -234,13 +235,16 @@ class TestReviewerNode(unittest.IsolatedAsyncioTestCase):
         # LLM should NOT be called
         mock_get_llm.assert_not_called()
 
+    @patch("src.agents.reviewer_agent.get_tracer")
     @patch("src.nodes.reviewer.get_tracer")
     @patch("src.nodes.reviewer.get_structured_llm")
     @patch("src.nodes.reviewer.TokenTrackerCallback")
-    async def test_proceed_decision(self, mock_token, mock_get_llm, mock_tracer) -> None:
+    async def test_proceed_decision(self, mock_token, mock_get_llm, mock_node_tracer, mock_tracer) -> None:
         """Reviewer returns 'sufficient' → decision is 'proceed'."""
         mock_tracer.return_value.span.return_value.__enter__ = MagicMock(return_value=("", None))
         mock_tracer.return_value.span.return_value.__exit__ = MagicMock(return_value=False)
+        mock_node_tracer.return_value.span.return_value.__enter__ = MagicMock(return_value=("", None))
+        mock_node_tracer.return_value.span.return_value.__exit__ = MagicMock(return_value=False)
         mock_token.snapshot.return_value = (0, 0, "")
 
         mock_llm = AsyncMock()
@@ -258,20 +262,23 @@ class TestReviewerNode(unittest.IsolatedAsyncioTestCase):
         outputs = [_make_output(1, "Task A")]
         state = self._make_state(round=0, outputs=outputs)
 
-        from src.nodes.reviewer import reviewer
+        from src.agents.reviewer_agent import reviewer
         result = await reviewer(state)
 
         self.assertEqual(result["review_decision"], "proceed")
         self.assertEqual(result["re_execute_task_ids"], [])
         self.assertEqual(result["review_round"], 1)
 
+    @patch("src.agents.reviewer_agent.get_tracer")
     @patch("src.nodes.reviewer.get_tracer")
     @patch("src.nodes.reviewer.get_structured_llm")
     @patch("src.nodes.reviewer.TokenTrackerCallback")
-    async def test_re_execute_decision(self, mock_token, mock_get_llm, mock_tracer) -> None:
+    async def test_re_execute_decision(self, mock_token, mock_get_llm, mock_node_tracer, mock_tracer) -> None:
         """Reviewer returns 'needs_improvement' → decision is 're-execute'."""
         mock_tracer.return_value.span.return_value.__enter__ = MagicMock(return_value=("", None))
         mock_tracer.return_value.span.return_value.__exit__ = MagicMock(return_value=False)
+        mock_node_tracer.return_value.span.return_value.__enter__ = MagicMock(return_value=("", None))
+        mock_node_tracer.return_value.span.return_value.__exit__ = MagicMock(return_value=False)
         mock_token.snapshot.return_value = (0, 0, "")
 
         mock_llm = AsyncMock()
@@ -290,7 +297,7 @@ class TestReviewerNode(unittest.IsolatedAsyncioTestCase):
         outputs = [_make_output(1, "A"), _make_output(2, "B")]
         state = self._make_state(round=0, outputs=outputs)
 
-        from src.nodes.reviewer import reviewer
+        from src.agents.reviewer_agent import reviewer
         result = await reviewer(state)
 
         self.assertEqual(result["review_decision"], "re-execute")
@@ -298,13 +305,16 @@ class TestReviewerNode(unittest.IsolatedAsyncioTestCase):
         self.assertIn("请补充", result["review_feedback"])
         self.assertEqual(result["review_round"], 1)
 
+    @patch("src.agents.reviewer_agent.get_tracer")
     @patch("src.nodes.reviewer.get_tracer")
     @patch("src.nodes.reviewer.get_structured_llm")
     @patch("src.nodes.reviewer.TokenTrackerCallback")
-    async def test_add_tasks_decision(self, mock_token, mock_get_llm, mock_tracer) -> None:
+    async def test_add_tasks_decision(self, mock_token, mock_get_llm, mock_node_tracer, mock_tracer) -> None:
         """Reviewer returns 'needs_more_tasks' → decision is 'add_tasks'."""
         mock_tracer.return_value.span.return_value.__enter__ = MagicMock(return_value=("", None))
         mock_tracer.return_value.span.return_value.__exit__ = MagicMock(return_value=False)
+        mock_node_tracer.return_value.span.return_value.__enter__ = MagicMock(return_value=("", None))
+        mock_node_tracer.return_value.span.return_value.__exit__ = MagicMock(return_value=False)
         mock_token.snapshot.return_value = (0, 0, "")
 
         mock_llm = AsyncMock()
@@ -322,19 +332,22 @@ class TestReviewerNode(unittest.IsolatedAsyncioTestCase):
         outputs = [_make_output(1, "A")]
         state = self._make_state(round=0, outputs=outputs)
 
-        from src.nodes.reviewer import reviewer
+        from src.agents.reviewer_agent import reviewer
         result = await reviewer(state)
 
         self.assertEqual(result["review_decision"], "add_tasks")
         self.assertEqual(result["re_execute_task_ids"], [])
 
+    @patch("src.agents.reviewer_agent.get_tracer")
     @patch("src.nodes.reviewer.get_tracer")
     @patch("src.nodes.reviewer.get_structured_llm")
     @patch("src.nodes.reviewer.TokenTrackerCallback")
-    async def test_max_rounds_override_llm_decision(self, mock_token, mock_get_llm, mock_tracer) -> None:
+    async def test_max_rounds_override_llm_decision(self, mock_token, mock_get_llm, mock_node_tracer, mock_tracer) -> None:
         """At max rounds, even if LLM says needs_improvement, override to proceed."""
         mock_tracer.return_value.span.return_value.__enter__ = MagicMock(return_value=("", None))
         mock_tracer.return_value.span.return_value.__exit__ = MagicMock(return_value=False)
+        mock_node_tracer.return_value.span.return_value.__enter__ = MagicMock(return_value=("", None))
+        mock_node_tracer.return_value.span.return_value.__exit__ = MagicMock(return_value=False)
         mock_token.snapshot.return_value = (0, 0, "")
 
         mock_llm = AsyncMock()
@@ -353,7 +366,7 @@ class TestReviewerNode(unittest.IsolatedAsyncioTestCase):
         outputs = [_make_output(1, "A")]
         state = self._make_state(round=1, outputs=outputs)
 
-        from src.nodes.reviewer import reviewer
+        from src.agents.reviewer_agent import reviewer
         result = await reviewer(state)
 
         self.assertEqual(result["review_decision"], "proceed")
