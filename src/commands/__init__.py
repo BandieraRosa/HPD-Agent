@@ -48,8 +48,10 @@ COMMAND_HANDLERS: dict[str, callable] = {
 }
 
 
-def handle_command(raw: str, agent: QueryAgent) -> bool:
+async def handle_command(raw: str, agent: QueryAgent) -> bool:
     """Dispatch a /command. Returns True if the loop should break."""
+    import asyncio
+
     stripped = raw.lstrip("/").strip()
     name = "/" + stripped.split()[0] if stripped else ""
 
@@ -58,4 +60,6 @@ def handle_command(raw: str, agent: QueryAgent) -> bool:
         print(f"Unknown command: {name.lstrip('/')}")
         return False
 
+    if asyncio.iscoroutinefunction(handler):
+        return await handler(raw, agent)
     return handler(raw, agent)

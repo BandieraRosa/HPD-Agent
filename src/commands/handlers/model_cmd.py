@@ -58,38 +58,50 @@ def _print_list(store: ModelStore) -> None:
 # Interactive create                                                           #
 # -------------------------------------------------------------------------- #
 
-def _read_line(prompt_text: str, default: str = "") -> str | None:
+async def _read_line(prompt_text: str, default: str = "") -> str | None:
     """Prompt with ESC / Ctrl+C returning None to signal cancellation."""
     suffix = f" [{default}]: " if default else ": "
     try:
-        return _model_session.prompt(prompt_text + suffix).strip() or default
+        result = await _model_session.prompt_async(prompt_text + suffix)
+        return result.strip() or default
     except KeyboardInterrupt:
         return None
 
 
-def _run_create(store: ModelStore) -> None:
+def _sanitize_base_url(url: str) -> str:
+    """Strip trailing /chat/completions — OpenAI SDK appends it automatically."""
+    url = url.rstrip("/")
+    for suffix in ("/chat/completions", "/v1/chat/completions"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
+            break
+    return url
+
+
+async def _run_create(store: ModelStore) -> None:
     """Walk the user through creating a new model profile. ESC cancels."""
     print("\n=== Create New Model ===")
     print("Press ESC at any prompt to cancel.\n")
     print("Required:\n")
 
-    name = _read_line("  name")
+    name = await _read_line("  name")
     if name is None:
         print("\nCancelled.\n")
         return
-    model = _read_line("  model", "deepseek-v4-flash")
+    model = await _read_line("  model", "deepseek-v4-flash")
     if model is None:
         print("\nCancelled.\n")
         return
-    base_url = _read_line("  base_url", "https://api.deepseek.com")
+    base_url = await _read_line("  base_url", "https://api.deepseek.com")
     if base_url is None:
         print("\nCancelled.\n")
         return
+    base_url = _sanitize_base_url(base_url)
 
     print("\nOptional (press Enter to skip):\n")
-    api_key = _read_line("  api_key") or ""
-    temp_str = _read_line("  temperature") or "0.0"
-    thinking = _read_line("  thinking (enabled/disabled)", "disabled") or "disabled"
+    api_key = await _read_line("  api_key") or ""
+    temp_str = await _read_line("  temperature") or "0.0"
+    thinking = await _read_line("  thinking (enabled/disabled)", "disabled") or "disabled"
 
     try:
         temperature = float(temp_str)
@@ -120,7 +132,7 @@ def _run_create(store: ModelStore) -> None:
 
 VALID_SUBS = ("list", "create", "switch")
 
-def handle(raw: str, agent: QueryAgent | None = None) -> bool:
+async def handle(raw: str, agent: QueryAgent | None = None) -> bool:
     """Dispatch to the appropriate sub-command."""
     parts = raw.strip().split()
 
@@ -139,7 +151,7 @@ def handle(raw: str, agent: QueryAgent | None = None) -> bool:
     store = get_store()
 
     if sub == "create":
-        _run_create(store)
+        await _run_create(store)
         return False
 
     if sub == "switch":
@@ -163,5 +175,5 @@ def handle(raw: str, agent: QueryAgent | None = None) -> bool:
 
 
 # Legacy entry point (still called by the registry as run(raw, agent))
-def run(raw: str, agent: QueryAgent) -> bool:
-    return handle(raw, agent)
+async def run(raw: str, agent: QueryAgent) -> bool:
+    return await handle(raw, agent)

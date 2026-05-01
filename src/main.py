@@ -116,7 +116,7 @@ async def run_loop():
         if not query:
             continue
         if query.startswith("/"):
-            if handle_command(query, agent):
+            if await handle_command(query, agent):
                 break
             continue
 

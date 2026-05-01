@@ -100,7 +100,14 @@ async def direct_answer(state: AgentState) -> AgentState:
 
                 messages.append(HumanMessage(content=""))
             else:
-                print(content, end="", flush=True)
+                # Final response: stream token-by-token for responsiveness
+                streamed_content = ""
+                async for chunk in llm.astream(messages):
+                    t = getattr(chunk, "content", "") or ""
+                    if t:
+                        streamed_content += t
+                        print(t, end="", flush=True)
+                content = streamed_content
                 break
 
         # Record span tokens (all LLM calls were tracked by the monkey-patch)
