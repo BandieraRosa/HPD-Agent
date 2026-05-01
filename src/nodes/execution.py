@@ -121,6 +121,37 @@ def _extract_paths_from_terminal_cmd(cmd: str) -> list[str]:
     return paths
 
 
+def _build_tool_chain(tool_log: str) -> str:
+    """Build a compact tool call chain summary — tool names + key args, no output.
+
+    Example output:
+      [1] read_file('src/main.py')
+      [2] terminal('ls -la')
+      [3] read_file('src/config.py')
+    """
+    lines: list[str] = []
+    idx = 0
+    # Match [Tool: name(arg_string)] — capture the full args including quotes
+    for match in re.finditer(r"\[Tool:\s*(\w+)\(([^)]*)\)\]", tool_log):
+        idx += 1
+        name = match.group(1)
+        args_raw = match.group(2) or ""
+        # Extract the primary value: path='...' or cmd='...'
+        # Handle nested quotes: cmd='grep -r "TODO" src/'
+        val_match = re.search(r"""(?:path|cmd)\s*=\s*'([^']*(?:'[^']*')*[^']*)'""", args_raw)
+        if not val_match:
+            val_match = re.search(r'(?:path|cmd)\s*=\s*"([^"]*)"', args_raw)
+        if val_match:
+            arg_str = val_match.group(1)
+            # Truncate long commands
+            if len(arg_str) > 60:
+                arg_str = arg_str[:57] + "..."
+        else:
+            arg_str = args_raw[:60] if args_raw else ""
+        lines.append(f"  [{idx}] {name}({arg_str})")
+    return "\n".join(lines) if lines else ""
+
+
 def _extract_key_findings_llm(detail: str) -> list[str]:
     """Use an LLM to extract structured key findings from detail text."""
     findings: list[str] = []
@@ -170,9 +201,11 @@ async def execute(task_id: int, task_name: str, context: str) -> SubTaskOutput:
         # Step 3: Parse tool usage from tool_log
         tools_used = _parse_tools_used(tool_log) if tool_log else []
 
-        # Step 4: Build detail (includes tool log for traceability)
-        if tool_log and tool_log.strip():
-            detail = f"{content}\n\n[工具执行记录]\n{tool_log}"
+        # Step 4: Build compressed detail — reasoning + tool chain summary only.
+        # Full tool results stay in tool_log for the synthesizer if needed.
+        tool_chain = _build_tool_chain(tool_log) if tool_log else ""
+        if tool_chain:
+            detail = f"{content}\n\n[工具调用链]\n{tool_chain}"
         else:
             detail = content
 
@@ -193,4 +226,5 @@ async def execute(task_id: int, task_name: str, context: str) -> SubTaskOutput:
             expert_mode=is_expert,
             tools_used=tools_used,
             key_findings=key_findings,
+            tool_log=tool_log or "",
         )

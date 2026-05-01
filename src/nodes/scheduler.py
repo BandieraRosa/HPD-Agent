@@ -145,6 +145,8 @@ async def run_all(
     context: str,
     retry: RetryConfig = RetryConfig(),
     ctx_config: ContextConfig | None = None,
+    execute_only: set[int] | None = None,
+    existing_outputs: list[SubTaskOutput] | None = None,
 ) -> tuple[dict[int, str], list[SubTaskOutput]]:
     """Execute all sub-tasks respecting DAG dependencies (parallel within each topological layer).
 
@@ -156,6 +158,10 @@ async def run_all(
         retry:    Retry configuration (max_attempts, base_delay, max_delay).
         ctx_config: Context configuration (max_total_chars, max_tools, max_findings).
                    Defaults to ContextConfig().
+        execute_only: If set, only execute tasks with these IDs. All other tasks
+                      are pre-populated from existing_outputs (skipped).
+        existing_outputs: Previous run outputs. Used with execute_only to carry
+                          forward results of tasks that don't need re-execution.
 
     Returns:
         A tuple of (statuses, outputs) where:
@@ -176,7 +182,6 @@ async def run_all(
     done: list[SubTaskOutput] = []
     in_degree: dict[int, int] = {t.id: len(t.depends) for t in tasks}
     running: set[int] = set()
-    total = len(tasks)
 
     task_map: dict[int, SubTask] = {t.id: t for t in tasks}
 
@@ -185,11 +190,39 @@ async def run_all(
     # Audit trail: original question + one-line summary per completed task.
     accumulated_context = context
 
-    _print_progress(0, total)
+    # Pre-populate completed_cache and done from existing_outputs when filtering
+    skip_ids: set[int] = set()
+    if execute_only is not None and existing_outputs:
+        for o in existing_outputs:
+            if o.id not in execute_only and o.id in task_map:
+                skip_ids.add(o.id)
+                statuses[o.id] = "done"
+                done.append(o)
+                completed_cache[o.id] = {
+                    "detail": o.detail,
+                    "summary": o.summary,
+                    "tools_used": o.tools_used,
+                    "key_findings": o.key_findings,
+                }
+                in_degree[o.id] = -1
+                accumulated_context += (
+                    f"\n\n[子任务 {o.id} ({o.name})]\n{o.summary}"
+                )
+        # Decrement in-degree of dependents for skipped tasks
+        for sid in skip_ids:
+            for t in tasks:
+                if sid in t.depends:
+                    in_degree[t.id] -= 1
+
+    total = len(tasks)
+    target_count = len(execute_only) if execute_only is not None else total
+
+    _print_progress(len(done), total)
 
     while len(done) < total:
         ready_ids = [
-            i for i, d in in_degree.items() if d == 0 and i not in running
+            i for i, d in in_degree.items()
+            if d == 0 and i not in running and i not in skip_ids
         ]
 
         if not ready_ids:

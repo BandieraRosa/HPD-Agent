@@ -18,9 +18,16 @@ class SubTaskDifficulty(str, Enum):
     HARD = "hard"
 
 
+class ReviewDecision(str, Enum):
+    PROCEED = "proceed"
+    RE_EXECUTE = "re-execute"
+    ADD_TASKS = "add_tasks"
+
+
 class NodeName(str, Enum):
     FIRST_LEVEL_ASSESSMENT = "first_level_assessment"
     DIRECT_ANSWER = "direct_answer"
     DECOMPOSER = "decomposer"
     SCHEDULER = "scheduler"
     SYNTHESIZER = "synthesizer"
+    REVIEWER = "reviewer"

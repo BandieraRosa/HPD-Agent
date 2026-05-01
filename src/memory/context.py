@@ -97,6 +97,9 @@ class ConversationContext(BaseModel):
         """Keep at most max_turns pairs (user + assistant = 1 turn)."""
         if len(self.messages) > self.max_turns * 2:
             self.messages = self.messages[-self.max_turns * 2 :]
+        # Cap sub-task outputs to prevent unbounded growth
+        if len(self.sub_task_outputs) > 50:
+            self.sub_task_outputs = self.sub_task_outputs[-50:]
 
     def to_summary(self) -> str:
         """Render conversation history as a readable string for prompt injection.

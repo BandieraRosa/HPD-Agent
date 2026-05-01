@@ -100,6 +100,36 @@ KEY_FINDINGS_PROMPT = (
     "只返回一个符合 schema 的 JSON 对象，不要输出其他内容。"
 )
 
+REVIEW_PROMPT = (
+    "你是一个质量审查专家。以下是一组子任务的执行结果，请逐一评估质量。\n\n"
+    "【用户原始问题】\n{query}\n\n"
+    "【子任务执行结果】\n{sub_task_results}\n\n"
+    "【当前轮次】第 {round} 轮（最多 {max_rounds} 轮）\n\n"
+    "【评估标准】\n"
+    "1. 对每个子任务，判断质量：good（结果充分可靠）、weak（有结果但不够充分）、failed（失败或无有效内容）。\n"
+    "2. 如果所有子任务质量均为 good，overall_quality 设为 sufficient。\n"
+    "3. 如果有 weak 或 failed 的子任务，overall_quality 设为 needs_improvement，"
+    "并在 re_execute_ids 中列出需要重新执行的子任务 ID，feedback 中给出改进建议。\n"
+    "4. 如果根据已有结果发现还需要额外的分析方向（当前任务未覆盖），"
+    "overall_quality 设为 needs_more_tasks，new_task_suggestions 中描述需要新增的子任务。\n"
+    "5. 如果已达到最大轮次，必须设为 sufficient，不得再要求重试。\n\n"
+    "只返回一个符合 schema 的 JSON 对象，不要输出其他内容。"
+)
+
+REPLAN_PROMPT = (
+    "你是一个任务规划专家。基于审查反馈，需要为现有任务图补充新的子任务。\n\n"
+    "【用户原始问题】\n{query}\n\n"
+    "【已有子任务及结果】\n{existing_tasks}\n\n"
+    "【审查反馈】\n{feedback}\n\n"
+    "【新增子任务建议】\n{suggestions}\n\n"
+    "要求：\n"
+    "  - 新子任务的 id 从 {next_id} 开始，必须连续且唯一。\n"
+    "  - 新子任务的 depends 可以引用已有子任务的 id（表示依赖已有结果）。\n"
+    "  - 新子任务之间也可以有依赖关系。\n"
+    "  - 不要重复已有子任务的工作。\n\n"
+    "只返回一个符合 schema 的 JSON 对象，不要输出其他内容。"
+)
+
 TOOLCHAIN_SUMMARY_PROMPT = (
     "你是一个专业的工具链分析助手。请从以下子任务执行记录中提炼出工具调用链摘要。\n\n"
     "要求：\n"

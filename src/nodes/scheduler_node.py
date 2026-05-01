@@ -14,6 +14,7 @@ async def scheduler_node(state: AgentState) -> AgentState:
     """Execute all sub-tasks via Kahn's algorithm + asyncio parallel execution.
 
     Reads ``tasks`` from state; writes ``sub_task_statuses`` and ``sub_task_outputs``.
+    Supports partial re-execution when called from the reviewer feedback loop.
     """
     tracer = get_tracer()
     parent_id = state.get("parent_span_id") or None
@@ -23,11 +24,23 @@ async def scheduler_node(state: AgentState) -> AgentState:
 
         tasks = state.get("tasks", [])
         retry = RetryConfig(max_attempts=3, base_delay=1.0, max_delay=10.0)
+
+        # Determine if this is a partial re-execution
+        review_decision = state.get("review_decision")
+        if review_decision == "re-execute":
+            execute_only = set(state.get("re_execute_task_ids", []))
+            existing_outputs = list(state.get("sub_task_outputs", []))
+        else:
+            execute_only = None
+            existing_outputs = None
+
         statuses, done = await scheduler_run(
             tasks=tasks,
             executor=expert_execute,
             context=state["input"],
             retry=retry,
+            execute_only=execute_only,
+            existing_outputs=existing_outputs,
         )
 
     failed_count = sum(1 for o in done if o.summary.startswith("[失败]"))

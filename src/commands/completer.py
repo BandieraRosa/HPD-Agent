@@ -99,7 +99,7 @@ class CommandCompleter(Completer):
 
         # ── /trace sub-commands ───────────────────────────────────
         if cmd == "/trace":
-            trace_subs = ("on", "off")
+            trace_subs = ("on", "half", "off")
             if len(parts) == 1:
                 for s in trace_subs:
                     yield Completion(s, start_position=0)

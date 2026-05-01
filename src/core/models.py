@@ -83,6 +83,12 @@ class SubTaskOutput(BaseModel):
         "Each entry is a standalone fact (e.g. 'port=8080', 'version=2.1.0'). "
         "Used by downstream tasks to inherit knowledge without re-executing.",
     )
+    tool_log: str = Field(
+        default="",
+        description="Full tool execution log (tool calls + results). "
+        "Kept separate from detail so detail stays compact for context passing, "
+        "but the synthesizer can access full tool output when needed.",
+    )
 
 
 class SubTaskAssessmentResult(BaseModel):
@@ -108,4 +114,37 @@ class PlannerResult(BaseModel):
     )
     reasoning: str = Field(
         description="Brief explanation of why the query was broken down this way."
+    )
+
+
+class ReviewTaskResult(BaseModel):
+    """Per-sub-task quality assessment from the reviewer."""
+
+    sub_task_id: int = Field(description="ID of the assessed sub-task.")
+    quality: str = Field(
+        description="Quality level: 'good' (sufficient), 'weak' (needs improvement), 'failed' (no useful output)."
+    )
+    reasoning: str = Field(description="Brief explanation of the quality assessment.")
+
+
+class ReviewerDecision(BaseModel):
+    """Structured output from the reviewer LLM call."""
+
+    overall_quality: str = Field(
+        description="'sufficient' (proceed to synthesis), 'needs_improvement' (re-execute), 'needs_more_tasks' (add new sub-tasks)."
+    )
+    task_reviews: list[ReviewTaskResult] = Field(
+        description="Per-sub-task quality assessments."
+    )
+    re_execute_ids: list[int] = Field(
+        default_factory=list,
+        description="IDs of sub-tasks to re-execute (when overall_quality is 'needs_improvement')."
+    )
+    new_task_suggestions: list[str] = Field(
+        default_factory=list,
+        description="Descriptions of new sub-tasks needed (when overall_quality is 'needs_more_tasks')."
+    )
+    feedback: str = Field(
+        default="",
+        description="Free-text guidance for re-execution or new task planning."
     )

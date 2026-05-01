@@ -29,7 +29,7 @@ from src.core.observability import get_tracer, TokenTrackerCallback
 from src.llm import get_llm
 from src.commands import COMMAND_HANDLERS, handle_command, get_completer
 from src.commands.handlers.tokens import get_used_tokens, MAX_TOKENS
-from src.commands.handlers.trace import is_trace_enabled
+from src.commands.handlers.trace import is_trace_enabled, is_trace_save_enabled
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
@@ -157,8 +157,9 @@ async def run_loop():
                 record = tracer.end_trace()
                 if record is not None:
                     record.print_console()
-                    path = record.save()
-                    print(f"\n  Trace saved: {path}")
+                    if is_trace_save_enabled():
+                        path = record.save()
+                        print(f"\n  Trace saved: {path}")
 
         print()
 

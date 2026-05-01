@@ -128,6 +128,12 @@ class QueryAgent:
             "synthesis_prompt": "",
             "conversation_history": ctx,
             "parent_span_id": "",
+            "review_round": 0,
+            "review_decision": None,
+            "re_execute_task_ids": [],
+            "review_feedback": "",
+            "new_sub_tasks": [],
+            "agent_history": [],
         }
         config = {"configurable": {"thread_id": sid}}
         result = await self._app.ainvoke(initial_state, config=config)
@@ -136,23 +142,31 @@ class QueryAgent:
         final_text = result.get("final_response") or synthesis
 
         # Track sub-task outputs for token accounting (not stored in messages,
-        # but consumed by the synthesizer's final LLM call)
+        # but consumed by the synthesizer's final LLM call).
+        # Only keep summary-level info to avoid context bloat — full details
+        # are in the synthesis prompt which is ephemeral.
         outputs = result.get("sub_task_outputs", [])
         for o in outputs:
             o_dict = {
                 "id": o.id,
                 "name": o.name,
-                "detail": o.detail,
+                "detail": o.detail,  # now compressed: reasoning + tool chain only
                 "summary": o.summary,
                 "tools_used": o.tools_used,
                 "expert_mode": o.expert_mode,
             }
             ctx.sub_task_outputs.append(o_dict)
+        # Cap accumulated sub-task outputs to the most recent 50
+        if len(ctx.sub_task_outputs) > 50:
+            ctx.sub_task_outputs = ctx.sub_task_outputs[-50:]
 
         tool_summary = self._extract_tool_summary(synthesis) if synthesis else ""
         if final_text:
+            # Store compact content — the full synthesis prompt is ephemeral.
+            # to_summary() already prefers answer_content, so content is just a fallback.
+            compact = final_text[:2000] if synthesis else final_text
             ctx.add_assistant_message(
-                content=synthesis if synthesis else final_text,
+                content=compact,
                 answer_content=final_text[:5000] if synthesis else None,
                 tool_summary=tool_summary or None,
             )

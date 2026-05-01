@@ -52,3 +52,18 @@ class AgentState(TypedDict):
 
     parent_span_id: str | None
     """Parent span ID for tracing. Propagated from the caller so child spans form a tree."""
+
+    review_round: int
+    """Current review round (0 = initial execution, 1+ = feedback loops)."""
+
+    review_decision: str | None
+    """Reviewer's last decision: 'proceed' | 're-execute' | 'add_tasks' | None."""
+
+    re_execute_task_ids: list[int]
+    """IDs of sub-tasks the reviewer wants re-executed."""
+
+    review_feedback: str
+    """Free-text feedback from the reviewer for re-execution or new task planning."""
+
+    new_sub_tasks: list[SubTask]
+    """New sub-tasks proposed by the coordinator during re-planning."""
