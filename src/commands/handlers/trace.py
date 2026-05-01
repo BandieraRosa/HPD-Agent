@@ -5,14 +5,46 @@ Sub-commands:
     /trace on       → full tracing (console + file)
     /trace half     → console only, no file saved
     /trace off      → disable tracing
+
+Trace mode is persisted to ~/.hpagent/config.json and restored on startup.
 """
+
+import json
+from pathlib import Path
 
 from src.agents import QueryAgent
 
+_CONFIG_PATH = Path.home() / ".hpagent" / "config.json"
 
 # Module-level tracing toggle — read by main.py
 # "on" = full (console + file), "half" = console only, "off" = disabled
 _trace_mode: str = "on"
+
+
+def _load_config() -> None:
+    """Load trace mode from config file."""
+    global _trace_mode
+    try:
+        if _CONFIG_PATH.exists():
+            cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+            mode = cfg.get("trace_mode")
+            if mode in ("on", "half", "off"):
+                _trace_mode = mode
+    except Exception:
+        pass
+
+
+def _save_config() -> None:
+    """Save current trace mode to config file."""
+    try:
+        _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        cfg = {}
+        if _CONFIG_PATH.exists():
+            cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        cfg["trace_mode"] = _trace_mode
+        _CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def is_trace_enabled() -> bool:
@@ -21,6 +53,10 @@ def is_trace_enabled() -> bool:
 
 def is_trace_save_enabled() -> bool:
     return _trace_mode == "on"
+
+
+# Load persisted config on import
+_load_config()
 
 
 def run(raw: str, agent: QueryAgent) -> bool:
@@ -35,12 +71,15 @@ def run(raw: str, agent: QueryAgent) -> bool:
     sub = parts[1].lower()
     if sub in ("on", "1", "enable", "true"):
         _trace_mode = "on"
+        _save_config()
         print("链路追踪: 已启用（控制台 + 文件）")
     elif sub in ("half", "console"):
         _trace_mode = "half"
+        _save_config()
         print("链路追踪: 仅控制台输出，不保存文件")
     elif sub in ("off", "0", "disable", "false"):
         _trace_mode = "off"
+        _save_config()
         print("链路追踪: 已禁用")
     else:
         print("用法: /trace [on|half|off]")
