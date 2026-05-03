@@ -8,11 +8,16 @@ Verifies:
 """
 
 import asyncio
+import importlib
 import sys
 import unittest
 from unittest.mock import AsyncMock, patch, MagicMock
 
-sys.path.insert(0, "/root/projects/evo_agent")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+execution_module = importlib.import_module("src.nodes.execution")
 
 from src.core.models import (
     RewriteResult,
@@ -173,11 +178,11 @@ class TestRewriter(unittest.IsolatedAsyncioTestCase):
 class TestExecutionBranching(unittest.IsolatedAsyncioTestCase):
     """Tests for the execute() function's easy/hard branching."""
 
-    @patch("src.nodes.execution._extract_key_findings_llm", return_value=[])
-    @patch("src.nodes.execution.TokenTrackerCallback.snapshot", return_value=(0, 0, ""))
-    @patch("src.nodes.execution.get_tracer")
-    @patch("src.nodes.execution.get_structured_llm")
-    @patch("src.nodes.execution.get_llm")
+    @patch.object(execution_module, "_extract_key_findings_llm", return_value=[])
+    @patch.object(execution_module.TokenTrackerCallback, "snapshot", return_value=(0, 0, ""))
+    @patch.object(execution_module, "get_tracer")
+    @patch.object(execution_module, "get_structured_llm")
+    @patch.object(execution_module, "get_llm")
     async def test_easy_task_single_call_no_tools(
         self, mock_get_llm, mock_get_structured, mock_tracer, mock_token, mock_kf
     ):
@@ -208,11 +213,11 @@ class TestExecutionBranching(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.tools_used, [])
         self.assertEqual(result.tool_log, "")
 
-    @patch("src.nodes.execution._execute_single_with_tools")
-    @patch("src.nodes.execution._extract_key_findings_llm", return_value=[])
-    @patch("src.nodes.execution.TokenTrackerCallback.snapshot", return_value=(0, 0, ""))
-    @patch("src.nodes.execution.get_tracer")
-    @patch("src.nodes.execution.get_structured_llm")
+    @patch.object(execution_module, "_execute_single_with_tools")
+    @patch.object(execution_module, "_extract_key_findings_llm", return_value=[])
+    @patch.object(execution_module.TokenTrackerCallback, "snapshot", return_value=(0, 0, ""))
+    @patch.object(execution_module, "get_tracer")
+    @patch.object(execution_module, "get_structured_llm")
     async def test_easy_task_with_tools_uses_tool_execution(
         self, mock_get_structured, mock_tracer, mock_token, mock_kf, mock_with_tools
     ):
@@ -237,12 +242,13 @@ class TestExecutionBranching(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.expert_mode)
         self.assertIn("src/main.py", result.tool_log)
 
-    @patch("src.nodes.execution._tot_expert_loop")
-    @patch("src.nodes.execution.TokenTrackerCallback.snapshot", return_value=(0, 0, ""))
-    @patch("src.nodes.execution.get_tracer")
-    @patch("src.nodes.execution.get_structured_llm")
+    @patch.object(execution_module, "_tot_expert_loop")
+    @patch.object(execution_module, "_extract_key_findings_llm", return_value=[])
+    @patch.object(execution_module.TokenTrackerCallback, "snapshot", return_value=(0, 0, ""))
+    @patch.object(execution_module, "get_tracer")
+    @patch.object(execution_module, "get_structured_llm")
     async def test_hard_task_enters_expert_loop(
-        self, mock_get_structured, mock_tracer, mock_token, mock_expert
+        self, mock_get_structured, mock_tracer, mock_token, mock_kf, mock_expert
     ):
         """Hard tasks enter the expert loop."""
         mock_tracer.return_value = _mock_tracer()
@@ -259,12 +265,13 @@ class TestExecutionBranching(unittest.IsolatedAsyncioTestCase):
 
         mock_expert.assert_called_once()
 
-    @patch("src.nodes.execution._tool_backed_expert_loop")
-    @patch("src.nodes.execution.TokenTrackerCallback.snapshot", return_value=(0, 0, ""))
-    @patch("src.nodes.execution.get_tracer")
-    @patch("src.nodes.execution.get_structured_llm")
+    @patch.object(execution_module, "_tool_backed_expert_loop")
+    @patch.object(execution_module, "_extract_key_findings_llm", return_value=[])
+    @patch.object(execution_module.TokenTrackerCallback, "snapshot", return_value=(0, 0, ""))
+    @patch.object(execution_module, "get_tracer")
+    @patch.object(execution_module, "get_structured_llm")
     async def test_hard_task_with_tools_bypasses_tot(
-        self, mock_get_structured, mock_tracer, mock_token, mock_tool_expert
+        self, mock_get_structured, mock_tracer, mock_token, mock_kf, mock_tool_expert
     ):
         """Hard tasks needing repository access should skip TOT and use tools directly."""
         mock_tracer.return_value = _mock_tracer()
@@ -296,7 +303,7 @@ class TestExecutionBranching(unittest.IsolatedAsyncioTestCase):
 class TestCandidateExecution(unittest.IsolatedAsyncioTestCase):
     """Tests for _execute_candidate."""
 
-    @patch("src.nodes.execution.get_llm")
+    @patch.object(execution_module, "get_llm")
     async def test_candidate_parses_json(self, mock_get_llm):
         """Candidate parses JSON response correctly."""
         mock_llm = AsyncMock()
@@ -313,7 +320,7 @@ class TestCandidateExecution(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.detail, "analysis result")
         self.assertEqual(result.summary, "found X")
 
-    @patch("src.nodes.execution.get_llm")
+    @patch.object(execution_module, "get_llm")
     async def test_candidate_handles_non_json(self, mock_get_llm):
         """Candidate handles non-JSON response gracefully."""
         mock_llm = AsyncMock()
