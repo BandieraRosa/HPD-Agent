@@ -1,0 +1,9 @@
+[
+  {"name": "outline_python", "kind": "module", "qualified_name": "outline_python", "parent": null},
+  {"name": "os", "kind": "import", "qualified_name": "os", "parent": "outline_python"},
+  {"name": "Path", "kind": "import", "qualified_name": "Path", "parent": "outline_python"},
+  {"name": "Greeter", "kind": "class", "qualified_name": "Greeter", "parent": "outline_python"},
+  {"name": "__init__", "kind": "method", "qualified_name": "Greeter.__init__", "parent": "Greeter"},
+  {"name": "greet", "kind": "method", "qualified_name": "Greeter.greet", "parent": "Greeter"},
+  {"name": "build_greeter", "kind": "function", "qualified_name": "build_greeter", "parent": "outline_python"}
+]
