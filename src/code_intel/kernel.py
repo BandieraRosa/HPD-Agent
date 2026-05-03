@@ -174,12 +174,15 @@ class CodeIntelKernel:
 
             attempt.selected = True
             trace.selected_provider = attempt.provider
+            provider_meta = self._provider_meta(data)
             return ToolResult(
                 ok=True,
                 data=data,
-                meta=ToolMeta(
-                    elapsed_ms=self._elapsed_ms(started_at),
-                    sources_used=[attempt.provider],
+                meta=provider_meta.model_copy(
+                    update={
+                        "elapsed_ms": self._elapsed_ms(started_at),
+                        "sources_used": provider_meta.sources_used or [attempt.provider],
+                    }
                 ),
             )
 
@@ -276,6 +279,20 @@ class CodeIntelKernel:
             raise ProviderUnavailable(f"provider missing {method_name}")
 
         return await self._maybe_await(method(**kwargs))
+
+    @staticmethod
+    def _provider_meta(data: object) -> ToolMeta:
+        raw_meta = getattr(data, "tool_meta", None)
+        if raw_meta is None:
+            raw_meta = getattr(data, "meta", None)
+        if raw_meta is None:
+            return ToolMeta()
+        if isinstance(raw_meta, ToolMeta):
+            return raw_meta
+        try:
+            return ToolMeta.model_validate(raw_meta)
+        except Exception:
+            return ToolMeta()
 
     @staticmethod
     def _elapsed_ms(started_at: float) -> int:

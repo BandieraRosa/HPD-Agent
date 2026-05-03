@@ -82,13 +82,24 @@ async def _search_symbols(query: str, kind: SymbolKind | None, limit: int) -> tu
     return result, [_symbol_match(symbol) for symbol in symbol_sequence(result.data)]
 
 
-async def _search_text(query: str, limit: int) -> tuple[ToolResult[object], list[SearchMatch]]:
+async def _search_text(
+    query: str,
+    limit: int,
+    *,
+    regex: bool = False,
+    case_sensitive: bool = False,
+) -> tuple[ToolResult[object], list[SearchMatch]]:
+    kwargs: dict[str, object] = {"query": query, "limit": limit}
+    if regex:
+        kwargs["regex"] = True
+    if case_sensitive:
+        kwargs["case_sensitive"] = True
+
     result = safe_cast_tool_result(
         await get_code_intel_kernel().call(
             Capability.TEXT_SEARCH,
             _SEARCH_LANGUAGE,
-            query=query,
-            limit=limit,
+            **kwargs,
         )
     )
     if not result.ok:
@@ -103,6 +114,8 @@ async def code_search(
     mode: Literal["symbol", "text", "mixed"] = "mixed",
     kind: Literal["function", "class", "method", "interface", "any"] = "any",
     limit: int = 20,
+    regex: bool = False,
+    case_sensitive: bool = False,
 ) -> str:
     """代码搜索：按 symbol 名或文本跨文件查找，返回 ToolResult JSON 字符串。
 
@@ -111,6 +124,8 @@ async def code_search(
         mode: symbol、text 或 mixed；默认 mixed。
         kind: symbol 搜索时的类型过滤；默认 any。
         limit: 最多返回多少条匹配。
+        regex: text/mixed 文本搜索是否按正则表达式解释 query。
+        case_sensitive: text/mixed 文本搜索是否区分大小写。
     """
     if not query.strip():
         return error_json("invalid_input", "搜索关键词不能为空。", "请提供 symbol 名称或文本片段。")
@@ -136,7 +151,12 @@ async def code_search(
 
         if mode in {"text", "mixed"} and len(matches) < capped_limit:
             remaining = capped_limit - len(matches)
-            text_result, text_matches = await _search_text(query, remaining + 1)
+            text_result, text_matches = await _search_text(
+                query,
+                remaining + 1,
+                regex=regex,
+                case_sensitive=case_sensitive,
+            )
             results.append(text_result)
             if not text_result.ok and mode == "text":
                 return kernel_error_json(text_result)
