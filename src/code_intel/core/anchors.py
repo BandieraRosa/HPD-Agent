@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import Location, validate_workspace_relative_path
@@ -65,4 +67,12 @@ class CodeTarget(BaseModel):
         raise ValueError("CodeTarget has no usable target")
 
 
-__all__ = ["CodeTarget", "TextAnchor"]
+class TargetResolver(Protocol):
+    """Resolve a CodeTarget into an LSP-style workspace location."""
+
+    async def resolve(self, target: CodeTarget) -> Location | None:
+        """Return a resolved location, or None when the target cannot be resolved."""
+        ...
+
+
+__all__ = ["CodeTarget", "TargetResolver", "TextAnchor"]

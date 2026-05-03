@@ -185,6 +185,7 @@ def test_tool_result_serializes_stably() -> None:
             "truncated": False,
             "more_available": False,
             "sources_used": ["tree_sitter", "lsp"],
+            "flags": [],
         },
     }
 
@@ -194,9 +195,12 @@ def test_tool_meta_uses_independent_sources_used_defaults() -> None:
     second = ToolMeta()
 
     first.sources_used.append("lsp")
+    first.flags.append("recovered")
 
     assert first.sources_used == ["lsp"]
     assert second.sources_used == []
+    assert first.flags == ["recovered"]
+    assert second.flags == []
 
 
 def test_tool_error_keeps_english_code_with_chinese_message_and_hint() -> None:
@@ -205,7 +209,7 @@ def test_tool_error_keeps_english_code_with_chinese_message_and_hint() -> None:
         error=ToolError(
             code="symbol_not_found",
             message="未找到指定符号。",
-            hint="请尝试使用 code_search 重新定位。",
+            hint="symbol 已被修改或删除，请用 code_search 重定位。",
         ),
     )
 
@@ -214,7 +218,7 @@ def test_tool_error_keeps_english_code_with_chinese_message_and_hint() -> None:
     assert dumped["error"] == {
         "code": "symbol_not_found",
         "message": "未找到指定符号。",
-        "hint": "请尝试使用 code_search 重新定位。",
+        "hint": "symbol 已被修改或删除，请用 code_search 重定位。",
     }
     assert dumped["meta"]["elapsed_ms"] == 0
 

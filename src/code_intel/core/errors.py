@@ -44,7 +44,7 @@ class IndexStale(CodeIntelError):
 class SymbolNotFound(CodeIntelError):
     code: ClassVar[str] = "symbol_not_found"
     message: ClassVar[str] = "未找到指定符号。"
-    hint: ClassVar[str | None] = "请尝试使用 code_search 重新定位。"
+    hint: ClassVar[str | None] = "symbol 已被修改或删除，请用 code_search 重定位。"
 
 
 class LSPTimeout(CodeIntelError):

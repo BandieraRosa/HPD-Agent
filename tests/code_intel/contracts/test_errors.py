@@ -79,7 +79,7 @@ def test_error_codes_messages_and_hints_are_stable() -> None:
         "SymbolNotFound": {
             "code": "symbol_not_found",
             "message": "未找到指定符号。",
-            "hint": "请尝试使用 code_search 重新定位。",
+            "hint": "symbol 已被修改或删除，请用 code_search 重定位。",
         },
         "LSPTimeout": {
             "code": "lsp_timeout",
@@ -99,6 +99,6 @@ def test_tool_result_can_wrap_mapped_code_intel_error() -> None:
     assert dumped["error"] == {
         "code": "symbol_not_found",
         "message": "未找到指定符号。",
-        "hint": "请尝试使用 code_search 重新定位。",
+        "hint": "symbol 已被修改或删除，请用 code_search 重定位。",
     }
     assert dumped["meta"]["sources_used"] == []

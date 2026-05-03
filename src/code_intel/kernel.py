@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import time
 from collections.abc import Awaitable, Iterable, Mapping
+from pathlib import Path
 from typing import Protocol, cast
 
 from pydantic import BaseModel, Field
@@ -12,15 +13,19 @@ from pydantic import BaseModel, Field
 from .core import (
     Capability,
     CodeIntelError,
+    CodeTarget,
     ConfidenceClass,
+    ContextPart,
     LSPTimeout,
     LanguageNotSupported,
     ProviderHealth,
     ProviderStatus,
     ProviderUnavailable,
+    TargetResolver,
     ToolMeta,
     ToolResult,
 )
+from .index import IndexBackedCodeContext, IndexBackedTargetResolver, SymbolIndexStore
 
 _CONFIDENCE_RANK: dict[ConfidenceClass, int] = {
     ConfidenceClass.HIGH: 3,
@@ -39,6 +44,8 @@ _CAPABILITY_METHODS: dict[Capability, str] = {
     Capability.DOCUMENT_SYMBOLS: "document_symbols",
     Capability.TEXT_SEARCH: "text_search",
 }
+_INDEX_PROVIDER_NAME = "symbol_index"
+_SEMANTIC_PLACEHOLDER_CAPABILITIES = {Capability.DEFINITION, Capability.REFERENCES, Capability.HOVER}
 
 
 class _DynamicMethod(Protocol):
@@ -71,10 +78,25 @@ class KernelTrace(BaseModel):
 
 
 class CodeIntelKernel:
-    """Provider registry and async capability router for code intelligence."""
+    """Provider registry, optional symbol-index facade, and async capability router."""
 
-    def __init__(self, providers: Iterable[object] | None = None) -> None:
+    def __init__(
+        self,
+        providers: Iterable[object] | None = None,
+        *,
+        symbol_index: SymbolIndexStore | None = None,
+        workspace_root: str | Path = ".",
+    ) -> None:
         self._providers: list[object] = []
+        self._symbol_index: SymbolIndexStore | None = symbol_index
+        self._target_resolver: IndexBackedTargetResolver | None = (
+            IndexBackedTargetResolver(symbol_index, workspace_root) if symbol_index is not None else None
+        )
+        self._context_extractor: IndexBackedCodeContext | None = (
+            IndexBackedCodeContext(symbol_index, workspace_root, resolver=self._target_resolver)
+            if symbol_index is not None and self._target_resolver is not None
+            else None
+        )
         self.last_trace: KernelTrace | None = None
         for provider in providers or ():
             _ = self.register_provider(provider)
@@ -84,17 +106,47 @@ class CodeIntelKernel:
         """Return explicitly registered providers in registration order."""
         return tuple(self._providers)
 
+    @property
+    def target_resolver(self) -> TargetResolver | None:
+        """Return the configured target resolver, when a symbol index is available."""
+        return self._target_resolver
+
     def register_provider(self, provider: object) -> "CodeIntelKernel":
         """Register a provider explicitly and return the kernel for chaining."""
         self._providers.append(provider)
         return self
 
+    async def resolve_target(self, target: CodeTarget) -> ToolResult[object]:
+        """Resolve a CodeTarget through the index-backed resolver when configured."""
+        started_at = time.perf_counter()
+        if self._target_resolver is None:
+            if target.location is not None:
+                return ToolResult(ok=True, data=target.location, meta=ToolMeta(elapsed_ms=self._elapsed_ms(started_at)))
+            return self._error_result(ProviderUnavailable(), started_at)
+
+        try:
+            resolved = await self._target_resolver.resolve_target(target)
+        except CodeIntelError as error:
+            return self._index_error_result(error, started_at)
+        except Exception:
+            return self._index_error_result(CodeIntelError(), started_at)
+
+        return self._index_success_result(
+            resolved.location,
+            started_at,
+            flags=list(resolved.flags),
+        )
+
     async def call(self, capability: Capability | str, language: str, **kwargs: object) -> ToolResult[object]:
-        """Route an async capability call to the best available provider."""
+        """Route an async capability call to the index or best available provider."""
         started_at = time.perf_counter()
         requested_capability = Capability(capability)
         trace = KernelTrace(capability=requested_capability, language=language)
         self.last_trace = trace
+
+        index_result = await self._call_index_capability(requested_capability, kwargs, started_at)
+        if index_result is not None:
+            return index_result
 
         candidate_records: list[tuple[object, ProviderAttemptTrace]] = []
         unavailable_records: list[ProviderAttemptTrace] = []
@@ -150,7 +202,11 @@ class CodeIntelKernel:
         trace.attempts = [attempt for _provider, attempt in candidate_records] + unavailable_records
 
         if not candidate_records:
-            error = ProviderUnavailable() if trace.attempts else LanguageNotSupported()
+            error = (
+                ProviderUnavailable()
+                if trace.attempts or requested_capability in _SEMANTIC_PLACEHOLDER_CAPABILITIES
+                else LanguageNotSupported()
+            )
             return self._error_result(error, started_at)
 
         last_fallback_error: CodeIntelError | None = None
@@ -187,6 +243,103 @@ class CodeIntelKernel:
             )
 
         return self._error_result(last_fallback_error or ProviderUnavailable(), started_at)
+
+    async def _call_index_capability(
+        self,
+        capability: Capability,
+        kwargs: dict[str, object],
+        started_at: float,
+    ) -> ToolResult[object] | None:
+        if self._symbol_index is None:
+            return None
+
+        if capability == Capability.DOCUMENT_SYMBOLS:
+            path = kwargs.get("path")
+            if not isinstance(path, str):
+                return None
+            try:
+                await self._symbol_index.initialize()
+                symbols = await self._symbol_index.get_symbols(path)
+            except CodeIntelError as error:
+                return self._index_error_result(error, started_at)
+            except Exception:
+                return self._index_error_result(CodeIntelError(), started_at)
+            return self._index_success_result(symbols, started_at)
+
+        if capability == Capability.CONTEXT_EXTRACT and self._context_extractor is not None:
+            target = kwargs.get("target")
+            include = self._coerce_context_parts(kwargs.get("include"))
+            max_tokens = kwargs.get("max_tokens")
+            if not isinstance(target, CodeTarget) or include is None or not isinstance(max_tokens, int):
+                return None
+            try:
+                context, flags = await self._context_extractor.extract_context(target, include, max_tokens)
+            except CodeIntelError as error:
+                return self._index_error_result(error, started_at)
+            except Exception:
+                return self._index_error_result(CodeIntelError(), started_at)
+            return self._index_success_result(
+                context,
+                started_at,
+                truncated=context.truncated,
+                flags=list(flags),
+            )
+
+        return None
+
+    @staticmethod
+    def _coerce_context_parts(value: object) -> set[ContextPart] | None:
+        if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Iterable):
+            return None
+        parts: set[ContextPart] = set()
+        for item in value:
+            try:
+                parts.add(item if isinstance(item, ContextPart) else ContextPart(str(item)))
+            except ValueError:
+                return None
+        return parts
+
+    def _index_success_result(
+        self,
+        data: object,
+        started_at: float,
+        *,
+        truncated: bool = False,
+        more_available: bool = False,
+        flags: list[str] | None = None,
+    ) -> ToolResult[object]:
+        self._mark_index_trace(selected=True)
+        return ToolResult(
+            ok=True,
+            data=data,
+            meta=ToolMeta(
+                elapsed_ms=self._elapsed_ms(started_at),
+                truncated=truncated,
+                more_available=more_available,
+                sources_used=[_INDEX_PROVIDER_NAME],
+                flags=flags or [],
+            ),
+        )
+
+    def _index_error_result(self, error: CodeIntelError, started_at: float) -> ToolResult[object]:
+        self._mark_index_trace(selected=False, error_code=error.code)
+        return self._error_result(error, started_at)
+
+    def _mark_index_trace(self, *, selected: bool, error_code: str | None = None) -> None:
+        trace = self.last_trace
+        if trace is None:
+            return
+        trace.attempts = [
+            ProviderAttemptTrace(
+                provider=_INDEX_PROVIDER_NAME,
+                confidence=ConfidenceClass.HIGH,
+                health=ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0),
+                attempted=True,
+                selected=selected,
+                error_code=error_code,
+            )
+        ]
+        trace.selected_provider = _INDEX_PROVIDER_NAME if selected else None
 
     @staticmethod
     def _failed_attempt(
