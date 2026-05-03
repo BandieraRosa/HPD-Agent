@@ -1,3 +1,4 @@
+import importlib
 import sys
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -5,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, "/root/projects/evo_agent")
 
 from src.core.models import PlannerResult, RewriteResult, SubTask
+
+planning_module = importlib.import_module("src.nodes.planning")
 
 
 def _mock_tracer():
@@ -31,10 +34,10 @@ class TestPlanningHelpers(unittest.TestCase):
 
 
 class TestDecomposeParallelExpansion(unittest.IsolatedAsyncioTestCase):
-    @patch("src.nodes.planning.TokenTrackerCallback.snapshot", return_value=(0, 0, ""))
-    @patch("src.nodes.planning.get_tracer")
-    @patch("src.nodes.planning.check_circle", return_value=False)
-    @patch("src.nodes.planning.get_structured_llm")
+    @patch.object(planning_module.TokenTrackerCallback, "snapshot", return_value=(0, 0, ""))
+    @patch.object(planning_module, "get_tracer")
+    @patch.object(planning_module, "check_circle", return_value=False)
+    @patch.object(planning_module, "get_structured_llm")
     async def test_decompose_expands_single_task_into_parallel_variants(
         self,
         mock_get_llm,

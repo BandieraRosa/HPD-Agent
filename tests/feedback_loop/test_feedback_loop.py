@@ -11,7 +11,9 @@ import sys
 import unittest
 from unittest.mock import AsyncMock, patch, MagicMock
 
-sys.path.insert(0, "/root/projects/evo_agent")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.core.models import SubTask, SubTaskOutput, ReviewerDecision, ReviewTaskResult
 from src.core.enums import ReviewDecision
