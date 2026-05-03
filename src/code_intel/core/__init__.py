@@ -1,6 +1,29 @@
 """Pure data contracts and provider interfaces for code intelligence."""
 
 from .anchors import CodeTarget, TextAnchor
+from .capabilities import (
+    Capability,
+    ConfidenceClass,
+    ContextExtractProvider,
+    ContextPart,
+    DefinitionProvider,
+    DiagnosticsProvider,
+    HoverProvider,
+    OutlineProvider,
+    Provider,
+    ProviderHealth,
+    ProviderStatus,
+    ReferenceProvider,
+    SymbolSearchProvider,
+)
+from .errors import (
+    CodeIntelError,
+    IndexStale,
+    LSPTimeout,
+    LanguageNotSupported,
+    ProviderUnavailable,
+    SymbolNotFound,
+)
 from .models import (
     CodeContext,
     Diagnostic,
@@ -14,19 +37,41 @@ from .models import (
     ToolMeta,
     ToolResult,
 )
+from .workspace import LanguageDetection, Workspace
 
 __all__ = [
+    "Capability",
     "CodeContext",
+    "CodeIntelError",
     "CodeTarget",
+    "ConfidenceClass",
+    "ContextExtractProvider",
+    "ContextPart",
+    "DefinitionProvider",
     "Diagnostic",
     "DiagnosticSeverity",
+    "DiagnosticsProvider",
     "HoverInfo",
+    "HoverProvider",
+    "IndexStale",
+    "LSPTimeout",
+    "LanguageDetection",
+    "LanguageNotSupported",
     "Location",
+    "OutlineProvider",
+    "Provider",
+    "ProviderHealth",
+    "ProviderStatus",
+    "ProviderUnavailable",
     "Range",
+    "ReferenceProvider",
     "Symbol",
     "SymbolKind",
+    "SymbolNotFound",
+    "SymbolSearchProvider",
     "TextAnchor",
     "ToolError",
     "ToolMeta",
     "ToolResult",
+    "Workspace",
 ]
