@@ -1,6 +1,6 @@
 """Pure data contracts and provider interfaces for code intelligence."""
 
-from .anchors import CodeTarget, TextAnchor
+from .anchors import CodeTarget, TargetResolver, TextAnchor
 from .capabilities import (
     Capability,
     ConfidenceClass,
@@ -69,6 +69,7 @@ __all__ = [
     "SymbolKind",
     "SymbolNotFound",
     "SymbolSearchProvider",
+    "TargetResolver",
     "TextAnchor",
     "ToolError",
     "ToolMeta",

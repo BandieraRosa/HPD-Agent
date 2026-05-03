@@ -91,12 +91,12 @@ async def code_semantic(
     kernel = get_code_intel_kernel()
     if operation == "document_symbols":
         path = target_path(target_model)
-        if path is None:
-            return error_json(
-                "invalid_input",
-                "document_symbols 需要目标中包含路径。",
-                "请使用 target.anchor.path 或 target.location.path 指定文件。",
-            )
+        if target_model.symbol_id is not None or path is None:
+            resolved = safe_cast_tool_result(await kernel.resolve_target(target_model))
+            if not resolved.ok:
+                return kernel_error_json(resolved)
+            resolved_locations = location_sequence([resolved.data])
+            path = resolved_locations[0].path
         result = safe_cast_tool_result(await kernel.call(capability, language_for_path(path), path=path))
     else:
         result = safe_cast_tool_result(

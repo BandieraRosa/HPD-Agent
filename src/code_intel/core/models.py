@@ -167,6 +167,10 @@ class ToolMeta(BaseModel):
         default_factory=list,
         description="Provider sources used to produce the result.",
     )
+    flags: list[str] = Field(
+        default_factory=list,
+        description="Machine-readable metadata flags produced while resolving the request.",
+    )
 
 
 T = TypeVar("T")

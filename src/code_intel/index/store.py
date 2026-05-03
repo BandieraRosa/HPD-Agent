@@ -213,6 +213,52 @@ class SymbolIndexStore:
             )
         return [_symbol_from_row(row) for row in rows]
 
+    async def get_symbol_by_id(self, symbol_id: str) -> Symbol | None:
+        """Return the current symbol row for a symbol ID, if it is still indexed."""
+        if not symbol_id:
+            return None
+        connection = await self._connect()
+        row = await _fetchone(
+            connection,
+            f"{_SYMBOL_SELECT_SQL} WHERE id = ?",
+            (symbol_id,),
+        )
+        if row is None:
+            return None
+        return _symbol_from_row(row)
+
+    async def get_symbol_by_qualified_name(
+        self,
+        path: str,
+        qualified_name: str,
+        *,
+        language: str | None = None,
+    ) -> Symbol | None:
+        """Return the current symbol matching a path and qualified-name identity."""
+        relative_path = validate_workspace_relative_path(path)
+        if not qualified_name:
+            return None
+        connection = await self._connect()
+        language_clause = "AND language = ?" if language is not None else ""
+        parameters: list[object] = [relative_path, qualified_name, qualified_name]
+        if language is not None:
+            parameters.append(language)
+        row = await _fetchone(
+            connection,
+            f"""
+            {_SYMBOL_SELECT_SQL}
+            WHERE path = ?
+              AND (qualified_name = ? OR (qualified_name IS NULL AND name = ?))
+              {language_clause}
+            ORDER BY stale ASC, start_line, start_col, name
+            LIMIT 1
+            """,
+            tuple(parameters),
+        )
+        if row is None:
+            return None
+        return _symbol_from_row(row)
+
     async def search_symbols(
         self,
         query: str,
