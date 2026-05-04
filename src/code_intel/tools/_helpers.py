@@ -145,10 +145,11 @@ def coerce_context_parts(include: Iterable[str] | None) -> set[ContextPart]:
 
 def validation_error_json(error: Exception) -> str:
     """Return a stable Chinese validation error for malformed tool input."""
+    _ = error
     return error_json(
         "invalid_input",
         "工具参数不符合代码智能格式要求。",
-        f"请检查 target、include、mode、operation 或路径参数：{error}",
+        "请检查 target、include、mode、operation 或路径参数。",
     )
 
 
