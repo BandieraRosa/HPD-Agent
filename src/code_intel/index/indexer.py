@@ -15,6 +15,7 @@ from pathspec.pattern import Pattern
 
 from src.code_intel.core import IndexStale, Symbol
 from src.code_intel.core.models import validate_workspace_relative_path
+from src.code_intel.tracing import trace_span
 
 from .invalidation import (
     CurrentFileMetadata,
@@ -149,6 +150,12 @@ class SymbolIndexer:
 
     async def index_workspace(self) -> WorkspaceIndexResult:
         """Scan safe candidates and rebuild only stale file entries."""
+        with trace_span("code_intel.index.index_workspace") as span:
+            result = await self._index_workspace_untraced()
+            span.add_metadata({"result_count": result.indexed, "cache_hit": result.reused > 0})
+            return result
+
+    async def _index_workspace_untraced(self) -> WorkspaceIndexResult:
         await self.store.initialize()
         candidates, scan_statuses = await asyncio.to_thread(self._scan_candidates_sync)
         candidate_by_path = {candidate.path: candidate for candidate in candidates}
@@ -218,6 +225,12 @@ class SymbolIndexer:
 
     async def index_file(self, path: str) -> InvalidationDecision:
         """Lazily index or reuse one safe file by workspace-relative path."""
+        with trace_span("code_intel.index.index_file", {"path": path}) as span:
+            decision = await self._index_file_untraced(path)
+            span.add_metadata({"cache_hit": decision.should_reuse, "result_count": 0 if decision.should_reuse else 1})
+            return decision
+
+    async def _index_file_untraced(self, path: str) -> InvalidationDecision:
         await self.store.initialize()
         relative_path = validate_workspace_relative_path(path)
         candidate, status = await asyncio.to_thread(self._candidate_for_relative_path_sync, relative_path)
@@ -250,11 +263,17 @@ class SymbolIndexer:
         candidate: _CandidateFile,
         metadata: CurrentFileForStore,
     ) -> list[Symbol]:
-        try:
-            return await self._extract_symbols(candidate.path, candidate.language)
-        except IndexStale:
-            await self.store.delete_file(metadata.path)
-            return await self._extract_symbols(candidate.path, candidate.language)
+        with trace_span(
+            "code_intel.index.extract_symbols",
+            {"path": candidate.path, "language": candidate.language},
+        ) as span:
+            try:
+                symbols = await self._extract_symbols(candidate.path, candidate.language)
+            except IndexStale:
+                await self.store.delete_file(metadata.path)
+                symbols = await self._extract_symbols(candidate.path, candidate.language)
+            span.add_metadata({"result_count": len(symbols)})
+            return symbols
 
     async def _extract_symbols(self, path: str, language: str) -> list[Symbol]:
         result = self.extractor(self.workspace_root, path, language)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from pathlib import Path
 from typing import Protocol, TypeVar, cast
 from urllib.parse import unquote, urlparse
@@ -24,8 +24,8 @@ from src.code_intel.core import (
 )
 from src.code_intel.core.errors import CodeIntelError
 from src.code_intel.core.models import validate_workspace_relative_path
+from src.code_intel.tracing import result_count, trace_span
 
-from .transport import LSPTransport
 
 LSP_SYMBOL_SOURCE = "lsp"
 LSP_SYMBOL_INDEX_VERSION = "lsp:document-symbol-v1"
@@ -40,18 +40,36 @@ class _LSPConverter(Protocol):
     def structure(self, obj: object, cl: type[ModelT]) -> ModelT: ...
 
 
+class _LSPNotificationHandler(Protocol):
+    def __call__(self, params_payload: object | None, /) -> Awaitable[None]: ...
+
+
+class _LSPTransport(Protocol):
+    async def add_notification_handler(self, method: str, handler: _LSPNotificationHandler) -> None: ...
+
+    async def start(self) -> None: ...
+
+    async def request(self, method: str, params: object | None = None, *, timeout: float | None = None) -> object | None: ...
+
+    async def notify(self, method: str, params: object | None = None) -> None: ...
+
+    async def is_running(self) -> bool: ...
+
+    async def close(self) -> None: ...
+
+
 class LSPClient:
     """Small typed LSP client boundary for T11 transport primitives."""
 
     def __init__(
         self,
-        transport: LSPTransport,
+        transport: _LSPTransport,
         *,
         workspace_root: str | Path = ".",
         language: str = "unknown",
         source: str = LSP_SYMBOL_SOURCE,
     ) -> None:
-        self._transport: LSPTransport = transport
+        self._transport: _LSPTransport = transport
         self._workspace_root: Path = Path(workspace_root).expanduser().resolve(strict=False)
         self._language: str = language
         self._source: str = source
@@ -217,26 +235,37 @@ class LSPClient:
         return await self._transport.is_running()
 
     async def _request_typed(self, method: str, params: object | None = None) -> object | None:
-        try:
-            payload = None if params is None else self._converter.unstructure(params)
-            return await self._transport.request(method, payload)
-        except (LSPTimeout, ProviderUnavailable):
-            raise
-        except CodeIntelError:
-            raise
-        except Exception:
-            raise ProviderUnavailable("LSP client request failed") from None
+        with trace_span(
+            f"lsp.{self._source}.{method}",
+            {"provider_name": self._source, "language": self._language},
+        ) as span:
+            try:
+                payload = None if params is None else self._converter.unstructure(params)
+                result = await self._transport.request(method, payload)
+                span.add_metadata({"result_count": result_count(result)})
+                return result
+            except (LSPTimeout, ProviderUnavailable):
+                raise
+            except CodeIntelError:
+                raise
+            except Exception:
+                raise ProviderUnavailable("LSP client request failed") from None
 
     async def _notify_typed(self, method: str, params: object | None = None) -> None:
-        try:
-            payload = None if params is None else self._converter.unstructure(params)
-            await self._transport.notify(method, payload)
-        except ProviderUnavailable:
-            raise
-        except CodeIntelError:
-            raise
-        except Exception:
-            raise ProviderUnavailable("LSP client notification failed") from None
+        with trace_span(
+            f"lsp.{self._source}.{method}",
+            {"provider_name": self._source, "language": self._language},
+        ) as span:
+            try:
+                payload = None if params is None else self._converter.unstructure(params)
+                await self._transport.notify(method, payload)
+                span.add_metadata({"result_count": 0})
+            except ProviderUnavailable:
+                raise
+            except CodeIntelError:
+                raise
+            except Exception:
+                raise ProviderUnavailable("LSP client notification failed") from None
 
     async def _handle_publish_diagnostics(self, params_payload: object | None) -> None:
         if params_payload is None:

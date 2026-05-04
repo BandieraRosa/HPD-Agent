@@ -14,6 +14,7 @@ import aiosqlite
 
 from src.code_intel.core import Range, Symbol, SymbolKind
 from src.code_intel.core.models import validate_workspace_relative_path
+from src.code_intel.tracing import trace_span
 
 from .invalidation import IndexedFileMetadata
 
@@ -114,6 +115,14 @@ class SymbolIndexStore:
 
     async def store_symbols(self, file_metadata: CurrentFileForStore, symbols: Sequence[Symbol]) -> None:
         """Replace one file's current symbols while preserving symbol ID history."""
+        with trace_span(
+            "code_intel.index.store_symbols",
+            {"path": file_metadata.path, "language": file_metadata.language},
+        ) as span:
+            await self._store_symbols_untraced(file_metadata, symbols)
+            span.add_metadata({"result_count": len(symbols)})
+
+    async def _store_symbols_untraced(self, file_metadata: CurrentFileForStore, symbols: Sequence[Symbol]) -> None:
         path = validate_workspace_relative_path(file_metadata.path)
         connection = await self._connect()
         now = time.time()
@@ -158,74 +167,90 @@ class SymbolIndexStore:
 
     async def delete_file(self, path: str) -> None:
         """Delete one file row and cascade current symbols; history is retained."""
-        relative_path = validate_workspace_relative_path(path)
-        connection = await self._connect()
-        _ = await connection.execute("DELETE FROM files WHERE path = ?", (relative_path,))
-        await connection.commit()
+        with trace_span("code_intel.index.delete_file", {"path": path}) as span:
+            relative_path = validate_workspace_relative_path(path)
+            connection = await self._connect()
+            _ = await connection.execute("DELETE FROM files WHERE path = ?", (relative_path,))
+            await connection.commit()
+            span.add_metadata({"result_count": 0})
 
     async def get_file(self, path: str) -> IndexedFileMetadata | None:
-        relative_path = validate_workspace_relative_path(path)
-        connection = await self._connect()
-        row = await _fetchone(
-            connection,
-            """
-            SELECT path, language, sha256, mtime, size, indexed_at,
-                   grammar_version, query_version, schema_version
-            FROM files
-            WHERE path = ?
-            """,
-            (relative_path,),
-        )
-        if row is None:
-            return None
-        return _indexed_file_from_row(row)
-
-    async def list_files(self) -> list[IndexedFileMetadata]:
-        connection = await self._connect()
-        rows = cast(
-            Sequence[_Row],
-            await connection.execute_fetchall(
+        with trace_span("code_intel.index.get_file", {"path": path}) as span:
+            relative_path = validate_workspace_relative_path(path)
+            connection = await self._connect()
+            row = await _fetchone(
+                connection,
                 """
                 SELECT path, language, sha256, mtime, size, indexed_at,
                        grammar_version, query_version, schema_version
                 FROM files
-                ORDER BY path
-                """
-            ),
-        )
-        return [_indexed_file_from_row(row) for row in rows]
-
-    async def get_symbols(self, path: str | None = None) -> list[Symbol]:
-        connection = await self._connect()
-        if path is None:
-            rows = cast(
-                Sequence[_Row],
-                await connection.execute_fetchall(f"{_SYMBOL_SELECT_SQL} ORDER BY path, start_line, start_col, name"),
+                WHERE path = ?
+                """,
+                (relative_path,),
             )
-        else:
-            relative_path = validate_workspace_relative_path(path)
+            if row is None:
+                span.add_metadata({"cache_hit": False, "result_count": 0})
+                return None
+            span.add_metadata({"cache_hit": True, "result_count": 1})
+            return _indexed_file_from_row(row)
+
+    async def list_files(self) -> list[IndexedFileMetadata]:
+        with trace_span("code_intel.index.list_files") as span:
+            connection = await self._connect()
             rows = cast(
                 Sequence[_Row],
                 await connection.execute_fetchall(
-                    f"{_SYMBOL_SELECT_SQL} WHERE path = ? ORDER BY start_line, start_col, name",
-                    (relative_path,),
+                    """
+                    SELECT path, language, sha256, mtime, size, indexed_at,
+                           grammar_version, query_version, schema_version
+                    FROM files
+                    ORDER BY path
+                    """
                 ),
             )
-        return [_symbol_from_row(row) for row in rows]
+            files = [_indexed_file_from_row(row) for row in rows]
+            span.add_metadata({"result_count": len(files)})
+            return files
+
+    async def get_symbols(self, path: str | None = None) -> list[Symbol]:
+        metadata = {"path": path} if path is not None else None
+        with trace_span("code_intel.index.get_symbols", metadata) as span:
+            connection = await self._connect()
+            if path is None:
+                rows = cast(
+                    Sequence[_Row],
+                    await connection.execute_fetchall(f"{_SYMBOL_SELECT_SQL} ORDER BY path, start_line, start_col, name"),
+                )
+            else:
+                relative_path = validate_workspace_relative_path(path)
+                rows = cast(
+                    Sequence[_Row],
+                    await connection.execute_fetchall(
+                        f"{_SYMBOL_SELECT_SQL} WHERE path = ? ORDER BY start_line, start_col, name",
+                        (relative_path,),
+                    ),
+                )
+            symbols = [_symbol_from_row(row) for row in rows]
+            span.add_metadata({"result_count": len(symbols), "cache_hit": bool(symbols)})
+            return symbols
 
     async def get_symbol_by_id(self, symbol_id: str) -> Symbol | None:
         """Return the current symbol row for a symbol ID, if it is still indexed."""
-        if not symbol_id:
-            return None
-        connection = await self._connect()
-        row = await _fetchone(
-            connection,
-            f"{_SYMBOL_SELECT_SQL} WHERE id = ?",
-            (symbol_id,),
-        )
-        if row is None:
-            return None
-        return _symbol_from_row(row)
+        with trace_span("code_intel.index.get_symbol_by_id") as span:
+            if not symbol_id:
+                span.add_metadata({"cache_hit": False, "result_count": 0})
+                return None
+            connection = await self._connect()
+            row = await _fetchone(
+                connection,
+                f"{_SYMBOL_SELECT_SQL} WHERE id = ?",
+                (symbol_id,),
+            )
+            if row is None:
+                span.add_metadata({"cache_hit": False, "result_count": 0})
+                return None
+            span.add_metadata({"cache_hit": True, "result_count": 1})
+            return _symbol_from_row(row)
 
     async def get_symbol_by_qualified_name(
         self,
@@ -243,21 +268,24 @@ class SymbolIndexStore:
         parameters: list[object] = [relative_path, qualified_name, qualified_name]
         if language is not None:
             parameters.append(language)
-        row = await _fetchone(
-            connection,
-            f"""
-            {_SYMBOL_SELECT_SQL}
-            WHERE path = ?
-              AND (qualified_name = ? OR (qualified_name IS NULL AND name = ?))
-              {language_clause}
-            ORDER BY stale ASC, start_line, start_col, name
-            LIMIT 1
-            """,
-            tuple(parameters),
-        )
-        if row is None:
-            return None
-        return _symbol_from_row(row)
+        with trace_span("code_intel.index.get_symbol_by_qualified_name", {"path": relative_path, "language": language or ""}) as span:
+            row = await _fetchone(
+                connection,
+                f"""
+                {_SYMBOL_SELECT_SQL}
+                WHERE path = ?
+                  AND (qualified_name = ? OR (qualified_name IS NULL AND name = ?))
+                  {language_clause}
+                ORDER BY stale ASC, start_line, start_col, name
+                LIMIT 1
+                """,
+                tuple(parameters),
+            )
+            if row is None:
+                span.add_metadata({"cache_hit": False, "result_count": 0})
+                return None
+            span.add_metadata({"cache_hit": True, "result_count": 1})
+            return _symbol_from_row(row)
 
     async def search_symbols(
         self,
@@ -270,13 +298,18 @@ class SymbolIndexStore:
         requested_limit = self._bounded_limit(limit)
         if query == "" or requested_limit <= 0:
             return []
-        if self.fts_available:
-            try:
-                return await self._search_symbols_fts(query, kind=kind, limit=requested_limit)
-            except Exception as error:
-                self.fts_available = False
-                self.fts_error = str(error)
-        return await self._search_symbols_like(query, kind=kind, limit=requested_limit)
+        with trace_span("code_intel.index.search_symbols") as span:
+            if self.fts_available:
+                try:
+                    results = await self._search_symbols_fts(query, kind=kind, limit=requested_limit)
+                    span.add_metadata({"result_count": len(results), "cache_hit": True, "truncated": len(results) >= requested_limit})
+                    return results
+                except Exception as error:
+                    self.fts_available = False
+                    self.fts_error = str(error)
+            results = await self._search_symbols_like(query, kind=kind, limit=requested_limit)
+            span.add_metadata({"result_count": len(results), "cache_hit": False, "truncated": len(results) >= requested_limit})
+            return results
 
     async def history_lookup(self, symbol_id: str) -> SymbolHistoryEntry | None:
         connection = await self._connect()
@@ -289,17 +322,21 @@ class SymbolIndexStore:
             """,
             (symbol_id,),
         )
-        if row is None:
-            return None
-        return SymbolHistoryEntry(
-            symbol_id=str(row["symbol_id"]),
-            language=str(row["language"]),
-            path=str(row["path"]),
-            qualified_name=str(row["qualified_name"]),
-            file_hash=str(row["file_hash"]),
-            created_at=_to_float(row["created_at"]),
-            last_seen_at=_to_float(row["last_seen_at"]),
-        )
+        with trace_span("code_intel.index.history_lookup") as span:
+            if row is None:
+                span.add_metadata({"cache_hit": False, "result_count": 0})
+                return None
+            entry = SymbolHistoryEntry(
+                symbol_id=str(row["symbol_id"]),
+                language=str(row["language"]),
+                path=str(row["path"]),
+                qualified_name=str(row["qualified_name"]),
+                file_hash=str(row["file_hash"]),
+                created_at=_to_float(row["created_at"]),
+                last_seen_at=_to_float(row["last_seen_at"]),
+            )
+            span.add_metadata({"cache_hit": True, "result_count": 1, "path": entry.path, "language": entry.language})
+            return entry
 
     async def history_entries(self) -> list[SymbolHistoryEntry]:
         connection = await self._connect()
@@ -313,18 +350,21 @@ class SymbolIndexStore:
                 """
             ),
         )
-        return [
-            SymbolHistoryEntry(
-                symbol_id=str(row["symbol_id"]),
-                language=str(row["language"]),
-                path=str(row["path"]),
-                qualified_name=str(row["qualified_name"]),
-                file_hash=str(row["file_hash"]),
-                created_at=_to_float(row["created_at"]),
-                last_seen_at=_to_float(row["last_seen_at"]),
-            )
-            for row in rows
-        ]
+        with trace_span("code_intel.index.history_entries") as span:
+            entries = [
+                SymbolHistoryEntry(
+                    symbol_id=str(row["symbol_id"]),
+                    language=str(row["language"]),
+                    path=str(row["path"]),
+                    qualified_name=str(row["qualified_name"]),
+                    file_hash=str(row["file_hash"]),
+                    created_at=_to_float(row["created_at"]),
+                    last_seen_at=_to_float(row["last_seen_at"]),
+                )
+                for row in rows
+            ]
+            span.add_metadata({"result_count": len(entries)})
+            return entries
 
     async def _connect(self) -> aiosqlite.Connection:
         if self._connection is None:
