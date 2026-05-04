@@ -1,3 +1,5 @@
+from src.code_intel.workflow import edit_policy
+
 ASSESSMENT_PROMPT = (
     "你是一个任务分类器。根据用户的问题，判断其难度等级。\n\n"
     "分类标准：\n"
@@ -52,7 +54,7 @@ SUB_TASK_PROMPT = (
     "7. 最后用一句话总结这个子任务的关键结论（简短，一句话即可）。\n\n"
     "用以下格式返回（JSON）：\n"
     '{{"detail": "<完整推理过程>", "summary": "<一句话总结>"}}'
-)
+) + edit_policy.get_prompt_section()
 
 SUB_TASK_ASSESSMENT_PROMPT = (
     "你是一个任务路由决策器。你需要同时判断两个维度：\n"
