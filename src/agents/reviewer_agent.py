@@ -80,6 +80,10 @@ async def reviewer(state: AgentState) -> AgentState:
             decision.re_execute_ids = []
             decision.new_task_suggestions = []
 
+        from src.code_intel.workflow import patch_gate
+        repair_update = await patch_gate.run_repair_round(state, parent_span_id=parent_span_id, max_rounds=MAX_REVIEW_ROUNDS)
+        if repair_update is not None:
+            return repair_update
         re_ids = decision.re_execute_ids if review_decision == "re-execute" else []
 
         # ── Print summary ───────────────────────────────────────────
