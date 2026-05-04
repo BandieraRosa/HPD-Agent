@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from src.code_intel.core import Diagnostic, HoverInfo, Location, Range, Symbol
+from src.code_intel.core import Diagnostic, HoverInfo, Location, Range, Symbol, ToolError
 
 
 class SearchMatch(BaseModel):
@@ -65,7 +65,7 @@ class CodeSemanticData(BaseModel):
 
 
 class ChecksSkipped(BaseModel):
-    """A verification check that T6 intentionally did not run."""
+    """A verification check that was intentionally not run."""
 
     check: str = Field(description="English check name.")
     reason: str = Field(description="Chinese-first reason shown to the agent.")
@@ -77,14 +77,21 @@ class CodeVerifyData(BaseModel):
     ok: bool = Field(description="True when verification found no blocking errors.")
     new_diagnostics: list[Diagnostic] = Field(default_factory=list, description="Diagnostics considered new.")
     resolved_diagnostics: list[Diagnostic] = Field(default_factory=list, description="Diagnostics considered resolved.")
-    unchanged_diagnostics: list[Diagnostic] = Field(default_factory=list, description="Current diagnostics without baseline delta.")
+    unchanged_diagnostics: list[Diagnostic] = Field(default_factory=list, description="Diagnostics unchanged from baseline.")
     severity_delta: dict[str, int] = Field(default_factory=dict, description="Severity deltas keyed by English severity.")
     checks_run: list[str] = Field(default_factory=list, description="Checks that were actually executed.")
     checks_skipped: list[ChecksSkipped] = Field(default_factory=list, description="Checks intentionally skipped.")
     recommended_next_action: Literal["proceed", "repair", "abort"] = Field(
         description="Recommended next step for the agent.",
     )
-    call_source: Literal["agent"] = Field(default="agent", description="T6 agent-facing verification source.")
+    call_source: Literal["agent", "workflow"] = Field(default="agent", description="Verification call-source bucket.")
+    verification_status: Literal["success", "partial", "blocked"] = Field(
+        default="success",
+        description="Structured status; warnings/provider issues are partial, new errors are blocked.",
+    )
+    baseline_key: str | None = Field(default=None, description="Verifier baseline cache key used for this call.")
+    baseline_refreshed: bool = Field(default=False, description="Whether this call captured a new agent baseline.")
+    provider_error: ToolError | None = Field(default=None, description="Safe provider error when verification is partial.")
 
 
 __all__ = [
