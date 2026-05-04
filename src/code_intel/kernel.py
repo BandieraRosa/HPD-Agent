@@ -26,6 +26,7 @@ from .core import (
     ToolResult,
 )
 from .index import IndexBackedCodeContext, IndexBackedTargetResolver, SymbolIndexStore
+from .tracing import result_count, safe_error_metadata, trace_span
 
 _CONFIDENCE_RANK: dict[ConfidenceClass, int] = {
     ConfidenceClass.HIGH: 3,
@@ -118,6 +119,15 @@ class CodeIntelKernel:
 
     async def resolve_target(self, target: CodeTarget) -> ToolResult[object]:
         """Resolve a CodeTarget through the index-backed resolver when configured."""
+        with trace_span(
+            "code_intel.provider.symbol_index.resolve_target",
+            {"provider_name": _INDEX_PROVIDER_NAME, **self._target_trace_metadata(target)},
+        ) as span:
+            result = await self._resolve_target_untraced(target)
+            span.add_metadata(self._result_trace_metadata(result))
+            return result
+
+    async def _resolve_target_untraced(self, target: CodeTarget) -> ToolResult[object]:
         started_at = time.perf_counter()
         if self._target_resolver is None:
             if target.location is not None:
@@ -139,6 +149,16 @@ class CodeIntelKernel:
 
     async def call(self, capability: Capability | str, language: str, **kwargs: object) -> ToolResult[object]:
         """Route an async capability call to the index or best available provider."""
+        capability_label = capability.value if isinstance(capability, Capability) else str(capability)
+        with trace_span(
+            "code_intel.kernel.dispatch",
+            {"capability": capability_label, "language": language, **self._call_path_trace_metadata(kwargs)},
+        ) as span:
+            result = await self._call_untraced(capability, language, **kwargs)
+            span.add_metadata(self._dispatch_trace_metadata(result))
+            return result
+
+    async def _call_untraced(self, capability: Capability | str, language: str, **kwargs: object) -> ToolResult[object]:
         started_at = time.perf_counter()
         requested_capability = Capability(capability)
         trace = KernelTrace(capability=requested_capability, language=language)
@@ -257,14 +277,24 @@ class CodeIntelKernel:
             path = kwargs.get("path")
             if not isinstance(path, str):
                 return None
-            try:
-                await self._symbol_index.initialize()
-                symbols = await self._symbol_index.get_symbols(path)
-            except CodeIntelError as error:
-                return self._index_error_result(error, started_at)
-            except Exception:
-                return self._index_error_result(CodeIntelError(), started_at)
-            return self._index_success_result(symbols, started_at)
+            with trace_span(
+                "code_intel.provider.symbol_index.document_symbols",
+                {"provider_name": _INDEX_PROVIDER_NAME, "capability": capability.value, "path": path},
+            ) as span:
+                try:
+                    await self._symbol_index.initialize()
+                    symbols = await self._symbol_index.get_symbols(path)
+                except CodeIntelError as error:
+                    result = self._index_error_result(error, started_at)
+                    span.add_metadata(self._result_trace_metadata(result))
+                    return result
+                except Exception:
+                    result = self._index_error_result(CodeIntelError(), started_at)
+                    span.add_metadata(self._result_trace_metadata(result))
+                    return result
+                result = self._index_success_result(symbols, started_at)
+                span.add_metadata(self._result_trace_metadata(result))
+                return result
 
         if capability == Capability.CONTEXT_EXTRACT and self._context_extractor is not None:
             target = kwargs.get("target")
@@ -272,18 +302,28 @@ class CodeIntelKernel:
             max_tokens = kwargs.get("max_tokens")
             if not isinstance(target, CodeTarget) or include is None or not isinstance(max_tokens, int):
                 return None
-            try:
-                context, flags = await self._context_extractor.extract_context(target, include, max_tokens)
-            except CodeIntelError as error:
-                return self._index_error_result(error, started_at)
-            except Exception:
-                return self._index_error_result(CodeIntelError(), started_at)
-            return self._index_success_result(
-                context,
-                started_at,
-                truncated=context.truncated,
-                flags=list(flags),
-            )
+            with trace_span(
+                "code_intel.provider.symbol_index.context_extract",
+                {"provider_name": _INDEX_PROVIDER_NAME, "capability": capability.value, **self._target_trace_metadata(target)},
+            ) as span:
+                try:
+                    context, flags = await self._context_extractor.extract_context(target, include, max_tokens)
+                except CodeIntelError as error:
+                    result = self._index_error_result(error, started_at)
+                    span.add_metadata(self._result_trace_metadata(result))
+                    return result
+                except Exception:
+                    result = self._index_error_result(CodeIntelError(), started_at)
+                    span.add_metadata(self._result_trace_metadata(result))
+                    return result
+                result = self._index_success_result(
+                    context,
+                    started_at,
+                    truncated=context.truncated,
+                    flags=list(flags),
+                )
+                span.add_metadata(self._result_trace_metadata(result))
+                return result
 
         return None
 
@@ -431,7 +471,14 @@ class CodeIntelKernel:
         if method is None:
             raise ProviderUnavailable(f"provider missing {method_name}")
 
-        return await self._maybe_await(method(**kwargs))
+        provider_name = self._provider_name(provider)
+        with trace_span(
+            f"code_intel.provider.{provider_name}.{method_name}",
+            {"provider_name": provider_name, "capability": capability.value, **self._call_path_trace_metadata(kwargs)},
+        ) as span:
+            result = await self._maybe_await(method(**kwargs))
+            span.add_metadata({"result_count": result_count(result), "truncated": getattr(result, "truncated", False)})
+            return result
 
     @staticmethod
     def _provider_meta(data: object) -> ToolMeta:
@@ -446,6 +493,47 @@ class CodeIntelKernel:
             return ToolMeta.model_validate(raw_meta)
         except Exception:
             return ToolMeta()
+
+    def _dispatch_trace_metadata(self, result: ToolResult[object]) -> dict[str, object]:
+        metadata = self._result_trace_metadata(result)
+        trace = self.last_trace
+        if trace is None:
+            return metadata
+        if trace.selected_provider is not None:
+            metadata["provider_name"] = trace.selected_provider
+        fallback_chain = [attempt.provider for attempt in trace.attempts if attempt.attempted or attempt.fallback or attempt.selected or attempt.error_code]
+        if fallback_chain:
+            metadata["fallback_chain"] = fallback_chain
+        return metadata
+
+    @staticmethod
+    def _result_trace_metadata(result: ToolResult[object]) -> dict[str, object]:
+        metadata: dict[str, object] = {
+            "result_count": result_count(result.data),
+            "truncated": result.meta.truncated,
+            "elapsed_ms": result.meta.elapsed_ms,
+        }
+        if result.error is not None:
+            metadata.update(safe_error_metadata(result.error))
+        return metadata
+
+    @staticmethod
+    def _call_path_trace_metadata(kwargs: Mapping[str, object]) -> dict[str, object]:
+        path = kwargs.get("path")
+        if isinstance(path, str):
+            return {"path": path}
+        target = kwargs.get("target")
+        if isinstance(target, CodeTarget):
+            return CodeIntelKernel._target_trace_metadata(target)
+        return {}
+
+    @staticmethod
+    def _target_trace_metadata(target: CodeTarget) -> dict[str, object]:
+        if target.location is not None:
+            return {"path": target.location.path}
+        if target.anchor is not None:
+            return {"path": target.anchor.path}
+        return {}
 
     @staticmethod
     def _elapsed_ms(started_at: float) -> int:
