@@ -17,6 +17,8 @@ import pytest
 
 from src.code_intel import CodeIntelKernel
 from src.code_intel.providers.fake import PYTHON_FAKE_PATH, create_fake_providers, fake_symbols
+from src.code_intel.core import Capability, ConfidenceClass, Diagnostic, ProviderHealth, ProviderStatus, ProviderUnavailable
+from src.code_intel.verifier import clear_baseline_cache
 from src.code_intel.tools import (
     code_context,
     code_outline,
@@ -50,9 +52,11 @@ def _data(raw: str) -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def explicit_fake_kernel() -> Generator[None, None, None]:
+    clear_baseline_cache()
     set_code_intel_kernel(CodeIntelKernel(create_fake_providers()))
     yield
     set_code_intel_kernel(None)
+    clear_baseline_cache()
 
 
 def test_default_kernel_remains_provider_free_until_explicitly_injected() -> None:
@@ -172,5 +176,68 @@ def test_code_verify_uses_diagnostics_for_explicit_paths_with_agent_call_source(
     assert unchanged[0]["severity"] == "warning"
     assert data["new_diagnostics"] == []
     assert data["severity_delta"] == {"error": 0, "warning": 0, "info": 0, "hint": 0}
-    assert {item["check"] for item in skipped} >= {"tests", "lint", "baseline"}
+    skipped_checks = {item["check"] for item in skipped}
+    assert skipped_checks >= {"tests", "lint"}
+    assert "baseline" not in skipped_checks
     assert data["recommended_next_action"] == "proceed"
+    assert data["verification_status"] == "success"
+    assert isinstance(data["baseline_key"], str) and data["baseline_key"]
+    assert data["baseline_refreshed"] is True
+
+
+def test_code_verify_provider_unavailable_returns_structured_partial() -> None:
+    """When the diagnostics provider raises ProviderUnavailable, code_verify
+    must return structured partial output, not success and not a traceback.
+
+    We inject a kernel whose provider supports DIAGNOSTICS but raises
+    ProviderUnavailable when called, triggering the partial path in code_verify.
+    """
+    class _FailingFakeProvider:
+        name: str = "failing_fake"
+        capabilities: set[Capability] = {Capability.DIAGNOSTICS}
+        languages: set[str] = {"python"}
+
+        async def supports(self, capability: Capability, language: str) -> bool:
+            return capability in self.capabilities and language in self.languages
+
+        async def health(self) -> ProviderHealth:
+            return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
+
+        async def confidence_for(self, _capability: Capability, _language: str) -> ConfidenceClass:
+            return ConfidenceClass.HIGH
+
+        async def diagnostics(self, path: str) -> list[Diagnostic]:
+            _ = path
+            raise ProviderUnavailable("diagnostics unavailable for test")
+
+    kernel_failing_diag = CodeIntelKernel((_FailingFakeProvider(),))
+    set_code_intel_kernel(kernel_failing_diag)
+
+    raw = _run(_ainvoke_text(code_verify, {"scope": "file", "paths": [PYTHON_FAKE_PATH]}))
+    payload = _payload(raw)
+
+    # Tool-level ok should be True (tool didn't crash)
+    assert payload["ok"] is True
+
+    data = cast(dict[str, object], payload["data"])
+
+    # Verification status must be partial, not success, not blocked
+    assert data["verification_status"] == "partial"
+    assert data["recommended_next_action"] == "abort"
+    assert data["ok"] is False  # verification-level ok
+    assert data["call_source"] == "agent"
+
+    # No diagnostics should be present
+    assert data["new_diagnostics"] == []
+    assert data["resolved_diagnostics"] == []
+    assert data["unchanged_diagnostics"] == []
+
+    # Provider error should be reported
+    provider_error = cast(dict[str, object] | None, data.get("provider_error"))
+    assert provider_error is not None, "provider_error must be populated"
+    assert provider_error["code"] == "provider_unavailable"
+
+    # Checks skipped should include lsp_diagnostics
+    checks_skipped = cast(list[dict[str, object]], data["checks_skipped"])
+    skipped_check_names = {item["check"] for item in checks_skipped}
+    assert "lsp_diagnostics" in skipped_check_names
