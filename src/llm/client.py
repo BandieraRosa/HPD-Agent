@@ -103,6 +103,23 @@ def _active_profile() -> object:
     from src.models import get_store
     return get_store().active_profile()
 
+_SOCKS_PROXY_KEYS = ("ALL_PROXY", "all_proxy")
+
+
+def _strip_socks_proxy() -> dict[str, str]:
+    """remove any SOCKS proxy settings from the environment, returning the stripped values for later restoration."""
+    stripped: dict[str, str] = {}
+    for key in _SOCKS_PROXY_KEYS:
+        val = os.environ.get(key, "")
+        if val.startswith(("socks://", "socks5://")):
+            stripped[key] = os.environ.pop(key)
+    return stripped
+
+
+def _restore_socks_proxy(stripped: dict[str, str]) -> None:
+    """restore any previously-stripped SOCKS proxy settings back into the environment."""
+    os.environ.update(stripped)
+
 
 def get_llm(
     model: str | None = None,
@@ -124,15 +141,19 @@ def get_llm(
     actual_key   = _resolve_api_key(getattr(profile, "api_key", "") if profile else "")
     actual_eb    = getattr(profile, "extra_body", {}) if profile else {}
 
-    return ChatOpenAI(
-        model=actual_model,
-        temperature=actual_temp,
-        api_key=actual_key,
-        base_url=actual_base,
-        stream=stream,
-        extra_body=actual_eb,
-        request_timeout=60,
-    )
+    stripped = _strip_socks_proxy()
+    try:
+        return ChatOpenAI(
+            model=actual_model,
+            temperature=actual_temp,
+            api_key=actual_key,
+            base_url=actual_base,
+            stream=stream,
+            extra_body=actual_eb,
+            request_timeout=60,
+        )
+    finally:
+        _restore_socks_proxy(stripped)
 
 
 def get_structured_llm(
