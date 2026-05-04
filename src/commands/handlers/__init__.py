@@ -1,9 +1,11 @@
 """Command handlers — each module exposes a run(raw, agent) function."""
 
 from .context_cmd import run as run_context
+from .index_cmd import run as run_index
 from .exit import run as run_exit
 from .help import run as run_help
 from .love import run as run_love
+from .lsp_cmd import run as run_lsp
 from .model_cmd import run as run_model
 from .new_session import run as run_new
 from .sessions import run as run_sessions
@@ -16,7 +18,9 @@ __all__ = [
     "run_context",
     "run_exit",
     "run_help",
+    "run_index",
     "run_love",
+    "run_lsp",
     "run_model",
     "run_new",
     "run_sessions",
