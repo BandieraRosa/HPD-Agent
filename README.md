@@ -219,3 +219,4 @@ rich>=13.0.0
 
 - [HPD-Agent Paper](HPD-Agent.md) — Detailed technical paper
 - [HPD.MD Template](HPD.MD) — Project knowledge summary format
+- [Code Intelligence user guide](docs/CODE_INTEL.en.md), full `code_intel` user documentation. Chinese version: [docs/CODE_INTEL.md](docs/CODE_INTEL.md).
