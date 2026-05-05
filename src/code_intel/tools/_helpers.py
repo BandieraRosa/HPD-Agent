@@ -66,10 +66,14 @@ def serialize_result(result: ToolResult[object]) -> str:
 
 def success_json(data: BaseModel, meta: ToolMeta | None = None) -> str:
     """Return a successful ToolResult JSON string."""
-    return serialize_result(ToolResult[object](ok=True, data=data, meta=meta or ToolMeta()))
+    return serialize_result(
+        ToolResult[object](ok=True, data=data, meta=meta or ToolMeta())
+    )
 
 
-def error_json(code: str, message: str, hint: str | None = None, meta: ToolMeta | None = None) -> str:
+def error_json(
+    code: str, message: str, hint: str | None = None, meta: ToolMeta | None = None
+) -> str:
     """Return a Chinese-first ToolResult error JSON string."""
     return serialize_result(
         ToolResult[object](
@@ -97,7 +101,9 @@ def merge_meta(
         update={
             "truncated": meta.truncated or truncated,
             "more_available": meta.more_available or more_available,
-            "sources_used": sources_used if sources_used is not None else meta.sources_used,
+            "sources_used": (
+                sources_used if sources_used is not None else meta.sources_used
+            ),
         }
     )
 
@@ -157,7 +163,10 @@ def model_sequence(data: object, model_type: type[T]) -> list[T]:
     """Validate a kernel data object as a list of Pydantic models."""
     if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):
         raise TypeError("kernel data is not a sequence")
-    return [item if isinstance(item, model_type) else model_type.model_validate(item) for item in data]
+    return [
+        item if isinstance(item, model_type) else model_type.model_validate(item)
+        for item in data
+    ]
 
 
 def symbol_sequence(data: object) -> list[Symbol]:

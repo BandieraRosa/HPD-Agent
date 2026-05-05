@@ -31,20 +31,28 @@ class RepairDecision(BaseModel):
     """Structured result returned by RepairPolicy."""
 
     action: RepairAction = Field(description="Next verifier action.")
-    status: VerificationStatus = Field(description="Whether verification succeeded, was partial, or blocked.")
+    status: VerificationStatus = Field(
+        description="Whether verification succeeded, was partial, or blocked."
+    )
     reason: str = Field(description="Concise English reason for this decision.")
     new_errors: int = Field(ge=0, description="Number of new error diagnostics.")
     new_warnings: int = Field(ge=0, description="Number of new warning diagnostics.")
     repair_round: int = Field(ge=0, description="Current repair round.")
     max_rounds: int = Field(ge=0, description="Maximum repair rounds before retreat.")
-    provider_error: ToolError | None = Field(default=None, description="Safe provider error for partial verification.")
+    provider_error: ToolError | None = Field(
+        default=None, description="Safe provider error for partial verification."
+    )
 
 
 class RepairPolicy(BaseModel):
     """Decide proceed/repair/retreat from a diagnostics delta."""
 
-    max_rounds: int = Field(default=2, ge=0, description="Maximum repair rounds before retreat.")
-    block_on_warnings: bool = Field(default=False, description="Whether warnings should block like errors.")
+    max_rounds: int = Field(
+        default=2, ge=0, description="Maximum repair rounds before retreat."
+    )
+    block_on_warnings: bool = Field(
+        default=False, description="Whether warnings should block like errors."
+    )
 
     def decide(
         self,
@@ -55,8 +63,16 @@ class RepairPolicy(BaseModel):
         """Return PROCEED, REPAIR, or RETREAT for the current delta."""
         _ = patch_history or []
         repair_round = max(0, round)
-        new_errors = sum(1 for item in delta.new if item.diagnostic.severity == DiagnosticSeverity.ERROR)
-        new_warnings = sum(1 for item in delta.new if item.diagnostic.severity == DiagnosticSeverity.WARNING)
+        new_errors = sum(
+            1
+            for item in delta.new
+            if item.diagnostic.severity == DiagnosticSeverity.ERROR
+        )
+        new_warnings = sum(
+            1
+            for item in delta.new
+            if item.diagnostic.severity == DiagnosticSeverity.WARNING
+        )
 
         if delta.provider_error is not None:
             return RepairDecision(

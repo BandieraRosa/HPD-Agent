@@ -31,7 +31,9 @@ def code_intel_tool(func: _AsyncToolFunction) -> BaseTool:
 
     @wraps(func)
     async def traced_tool(*args: object, **kwargs: object) -> str:
-        with trace_span(f"code_intel.{func.__name__}", _tool_input_metadata(kwargs)) as span:
+        with trace_span(
+            f"code_intel.{func.__name__}", _tool_input_metadata(kwargs)
+        ) as span:
             result = await func(*args, **kwargs)
             span.add_metadata(_tool_result_metadata(result))
             return result
@@ -100,7 +102,10 @@ def _tool_result_metadata(result: str) -> dict[str, object]:
     error = payload.get("error")
     if isinstance(error, dict):
         error_mapping = cast(dict[str, object], error)
-        metadata["error"] = {"code": error_mapping.get("code"), "message": error_mapping.get("message")}
+        metadata["error"] = {
+            "code": error_mapping.get("code"),
+            "message": error_mapping.get("message"),
+        }
     count = _known_result_count(payload.get("data"))
     if count is not None:
         metadata["result_count"] = count

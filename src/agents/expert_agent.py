@@ -15,7 +15,6 @@ import uuid
 from src.core.models import AgentMeta, SubTaskOutput
 from src.nodes.execution import execute as _execute_node
 
-
 AGENT_ROLE = "expert"
 
 

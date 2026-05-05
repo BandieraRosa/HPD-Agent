@@ -24,7 +24,12 @@ from .invalidation import (
     InvalidationReason,
     decide_file_invalidation,
 )
-from .store import CurrentFileForStore, SCHEMA_VERSION, SymbolIndexStore, default_symbol_index_path
+from .store import (
+    CurrentFileForStore,
+    SCHEMA_VERSION,
+    SymbolIndexStore,
+    default_symbol_index_path,
+)
 
 _BINARY_CHUNK_SIZE = 4096
 _DEFAULT_MAX_FILE_SIZE_BYTES = 1_000_000
@@ -42,7 +47,15 @@ _SECRET_FILE_NAMES = {
     "id_ed25519",
 }
 _SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx"}
-_SECRET_NAME_PARTS = {"secret", "secrets", "credential", "credentials", "token", "apikey", "api_key"}
+_SECRET_NAME_PARTS = {
+    "secret",
+    "secrets",
+    "credential",
+    "credentials",
+    "token",
+    "apikey",
+    "api_key",
+}
 _EXTENSION_TO_LANGUAGE = {
     ".py": "python",
     ".pyi": "python",
@@ -60,7 +73,9 @@ _EXTENSION_TO_LANGUAGE = {
 class SymbolExtractor(Protocol):
     """Provider-free callable used by SymbolIndexer to extract file symbols."""
 
-    def __call__(self, workspace_root: Path, path: str, language: str) -> Sequence[Symbol] | Awaitable[Sequence[Symbol]]:
+    def __call__(
+        self, workspace_root: Path, path: str, language: str
+    ) -> Sequence[Symbol] | Awaitable[Sequence[Symbol]]:
         """Return symbols for one workspace-relative path."""
         ...
 
@@ -98,7 +113,9 @@ class _CandidateFile:
     mtime: float
     size: int
 
-    def current_metadata(self, *, grammar_version: str, query_version: str, schema_version: str) -> CurrentFileMetadata:
+    def current_metadata(
+        self, *, grammar_version: str, query_version: str, schema_version: str
+    ) -> CurrentFileMetadata:
         return CurrentFileMetadata(
             path=self.path,
             language=self.language,
@@ -110,7 +127,9 @@ class _CandidateFile:
             schema_version=schema_version,
         )
 
-    def store_metadata(self, *, grammar_version: str, query_version: str, schema_version: str) -> CurrentFileForStore:
+    def store_metadata(
+        self, *, grammar_version: str, query_version: str, schema_version: str
+    ) -> CurrentFileForStore:
         return CurrentFileForStore(
             path=self.path,
             language=self.language,
@@ -139,20 +158,28 @@ class SymbolIndexer:
         max_file_size_bytes: int = _DEFAULT_MAX_FILE_SIZE_BYTES,
         languages_by_extension: dict[str, str] | None = None,
     ) -> None:
-        self.workspace_root: Path = Path(workspace_root).expanduser().resolve(strict=False)
+        self.workspace_root: Path = (
+            Path(workspace_root).expanduser().resolve(strict=False)
+        )
         self.extractor: SymbolExtractor = extractor
-        self.store: SymbolIndexStore = store or SymbolIndexStore(db_path or default_symbol_index_path(self.workspace_root))
+        self.store: SymbolIndexStore = store or SymbolIndexStore(
+            db_path or default_symbol_index_path(self.workspace_root)
+        )
         self.grammar_version: str = grammar_version
         self.query_version: str = query_version
         self.schema_version: str = schema_version
         self.max_file_size_bytes: int = max(1, max_file_size_bytes)
-        self.languages_by_extension: dict[str, str] = dict(languages_by_extension or _EXTENSION_TO_LANGUAGE)
+        self.languages_by_extension: dict[str, str] = dict(
+            languages_by_extension or _EXTENSION_TO_LANGUAGE
+        )
 
     async def index_workspace(self) -> WorkspaceIndexResult:
         """Scan safe candidates and rebuild only stale file entries."""
         with trace_span("code_intel.index.index_workspace") as span:
             result = await self._index_workspace_untraced()
-            span.add_metadata({"result_count": result.indexed, "cache_hit": result.reused > 0})
+            span.add_metadata(
+                {"result_count": result.indexed, "cache_hit": result.reused > 0}
+            )
             return result
 
     async def _index_workspace_untraced(self) -> WorkspaceIndexResult:
@@ -168,7 +195,13 @@ class SymbolIndexer:
             if previous.path not in candidate_by_path:
                 await self.store.delete_file(previous.path)
                 deleted += 1
-                statuses.append(ScanStatus(path=previous.path, status="deleted", reason=InvalidationReason.DELETED.value))
+                statuses.append(
+                    ScanStatus(
+                        path=previous.path,
+                        status="deleted",
+                        reason=InvalidationReason.DELETED.value,
+                    )
+                )
 
         decisions: dict[str, InvalidationDecision] = {}
         rebuild_all = False
@@ -180,7 +213,9 @@ class SymbolIndexer:
             )
             decision = decide_file_invalidation(stored_by_path.get(path), current)
             decisions[path] = decision
-            rebuild_all = rebuild_all or decision.action == InvalidationAction.REBUILD_ALL
+            rebuild_all = (
+                rebuild_all or decision.action == InvalidationAction.REBUILD_ALL
+            )
 
         rebuilt = 0
         reused = 0
@@ -188,13 +223,17 @@ class SymbolIndexer:
         errors = 0
         for candidate in candidates:
             decision = decisions[candidate.path]
-            should_rebuild = rebuild_all or decision.action == InvalidationAction.REBUILD
+            should_rebuild = (
+                rebuild_all or decision.action == InvalidationAction.REBUILD
+            )
             reason = decision.reason.value
             if rebuild_all and decision.action == InvalidationAction.REUSE:
                 reason = InvalidationAction.REBUILD_ALL.value
             if not should_rebuild:
                 reused += 1
-                statuses.append(ScanStatus(path=candidate.path, status="reused", reason=reason))
+                statuses.append(
+                    ScanStatus(path=candidate.path, status="reused", reason=reason)
+                )
                 continue
             try:
                 metadata = candidate.store_metadata(
@@ -202,14 +241,24 @@ class SymbolIndexer:
                     query_version=self.query_version,
                     schema_version=self.schema_version,
                 )
-                symbols = await self._extract_symbols_with_self_heal(candidate, metadata)
+                symbols = await self._extract_symbols_with_self_heal(
+                    candidate, metadata
+                )
                 await self.store.store_symbols(metadata, symbols)
                 indexed += 1
                 rebuilt += 1 if candidate.path in stored_by_path else 0
-                statuses.append(ScanStatus(path=candidate.path, status="indexed", reason=reason))
+                statuses.append(
+                    ScanStatus(path=candidate.path, status="indexed", reason=reason)
+                )
             except Exception as error:
                 errors += 1
-                statuses.append(ScanStatus(path=candidate.path, status="error", reason=error.__class__.__name__))
+                statuses.append(
+                    ScanStatus(
+                        path=candidate.path,
+                        status="error",
+                        reason=error.__class__.__name__,
+                    )
+                )
 
         return WorkspaceIndexResult(
             indexed=indexed,
@@ -227,13 +276,20 @@ class SymbolIndexer:
         """Lazily index or reuse one safe file by workspace-relative path."""
         with trace_span("code_intel.index.index_file", {"path": path}) as span:
             decision = await self._index_file_untraced(path)
-            span.add_metadata({"cache_hit": decision.should_reuse, "result_count": 0 if decision.should_reuse else 1})
+            span.add_metadata(
+                {
+                    "cache_hit": decision.should_reuse,
+                    "result_count": 0 if decision.should_reuse else 1,
+                }
+            )
             return decision
 
     async def _index_file_untraced(self, path: str) -> InvalidationDecision:
         await self.store.initialize()
         relative_path = validate_workspace_relative_path(path)
-        candidate, status = await asyncio.to_thread(self._candidate_for_relative_path_sync, relative_path)
+        candidate, status = await asyncio.to_thread(
+            self._candidate_for_relative_path_sync, relative_path
+        )
         previous = await self.store.get_file(relative_path)
         if candidate is None:
             decision = decide_file_invalidation(previous, None)
@@ -268,10 +324,14 @@ class SymbolIndexer:
             {"path": candidate.path, "language": candidate.language},
         ) as span:
             try:
-                symbols = await self._extract_symbols(candidate.path, candidate.language)
+                symbols = await self._extract_symbols(
+                    candidate.path, candidate.language
+                )
             except IndexStale:
                 await self.store.delete_file(metadata.path)
-                symbols = await self._extract_symbols(candidate.path, candidate.language)
+                symbols = await self._extract_symbols(
+                    candidate.path, candidate.language
+                )
             span.add_metadata({"result_count": len(symbols)})
             return symbols
 
@@ -321,7 +381,9 @@ class SymbolIndexer:
             stack.extend(reversed(directories))
         return candidates, statuses
 
-    def _candidate_for_relative_path_sync(self, path: str) -> tuple[_CandidateFile | None, ScanStatus]:
+    def _candidate_for_relative_path_sync(
+        self, path: str
+    ) -> tuple[_CandidateFile | None, ScanStatus]:
         spec = self._load_ignore_spec()
         lexical_path = self.workspace_root / path
         if lexical_path.is_symlink():
@@ -376,7 +438,10 @@ class SymbolIndexer:
     def _load_ignore_spec(self) -> PathSpec[Pattern]:
         gitignore = self.workspace_root / ".gitignore"
         try:
-            if not gitignore.is_file() or gitignore.stat().st_size > _MAX_IGNORE_FILE_SIZE_BYTES:
+            if (
+                not gitignore.is_file()
+                or gitignore.stat().st_size > _MAX_IGNORE_FILE_SIZE_BYTES
+            ):
                 return PathSpec.from_lines("gitignore", [])
             lines = gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -406,7 +471,9 @@ class SymbolIndexer:
         except ValueError:
             return None
 
-    def _is_ignored(self, relative_path: str, *, is_dir: bool, spec: PathSpec[Pattern]) -> bool:
+    def _is_ignored(
+        self, relative_path: str, *, is_dir: bool, spec: PathSpec[Pattern]
+    ) -> bool:
         parts = set(PurePosixPath(relative_path).parts)
         if parts.intersection(_ALWAYS_IGNORED_NAMES):
             return True
@@ -427,14 +494,18 @@ class SymbolIndexer:
         )
 
     def _language_for_path(self, relative_path: str) -> str | None:
-        return self.languages_by_extension.get(PurePosixPath(relative_path).suffix.casefold())
+        return self.languages_by_extension.get(
+            PurePosixPath(relative_path).suffix.casefold()
+        )
 
     def _hash_text_file(self, path: Path) -> tuple[str | None, bool, bool]:
         digest = hashlib.sha256()
         total = 0
         try:
             with path.open("rb") as handle:
-                first_chunk = handle.read(min(_BINARY_CHUNK_SIZE, self.max_file_size_bytes))
+                first_chunk = handle.read(
+                    min(_BINARY_CHUNK_SIZE, self.max_file_size_bytes)
+                )
                 if b"\0" in first_chunk:
                     return None, True, False
                 digest.update(first_chunk)

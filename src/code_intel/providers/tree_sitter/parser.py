@@ -102,7 +102,9 @@ class TreeSitterParser:
         self._languages: dict[str, Language] = {}
         self._queries: dict[str, Query] = {}
 
-    def extract_symbols(self, workspace_root: Path, path: str, language: str | None = None) -> list[Symbol]:
+    def extract_symbols(
+        self, workspace_root: Path, path: str, language: str | None = None
+    ) -> list[Symbol]:
         """Parse one workspace-relative file and return deterministic Symbol models."""
         relative_path = validate_workspace_relative_path(path)
         resolved_language = self.resolve_language(relative_path, language)
@@ -112,10 +114,15 @@ class TreeSitterParser:
         parser = self._load_parser(resolved_language)
         tree = parser.parse(raw_content)
         root = tree.root_node
-        module_record = self._module_record(root, relative_path, resolved_language, file_hash)
+        module_record = self._module_record(
+            root, relative_path, resolved_language, file_hash
+        )
         records = [module_record]
 
-        drafts = sorted(self._drafts_from_query(resolved_language, root, raw_content), key=lambda draft: draft.sort_key)
+        drafts = sorted(
+            self._drafts_from_query(resolved_language, root, raw_content),
+            key=lambda draft: draft.sort_key,
+        )
         for draft in drafts:
             kind = self._kind_for_draft(draft)
             parent = self._nearest_parent_record(records, draft.node)
@@ -147,11 +154,15 @@ class TreeSitterParser:
             normalized = requested_language.casefold()
             if normalized in SUPPORTED_LANGUAGES:
                 return normalized
-            raise TreeSitterGrammarUnavailable(f"unsupported language: {requested_language}")
+            raise TreeSitterGrammarUnavailable(
+                f"unsupported language: {requested_language}"
+            )
         suffix = Path(path).suffix.casefold()
         language = _EXTENSION_TO_LANGUAGE.get(suffix)
         if language is None:
-            raise TreeSitterGrammarUnavailable(f"unsupported path extension: {suffix or '<none>'}")
+            raise TreeSitterGrammarUnavailable(
+                f"unsupported path extension: {suffix or '<none>'}"
+            )
         return language
 
     def _resolve_path(self, workspace_root: Path, relative_path: str) -> Path:
@@ -171,7 +182,9 @@ class TreeSitterParser:
         try:
             loaded_language = cast(Language, self._language_loader(language))
         except Exception as error:
-            raise TreeSitterGrammarUnavailable(f"missing grammar for {language}") from error
+            raise TreeSitterGrammarUnavailable(
+                f"missing grammar for {language}"
+            ) from error
         self._languages[language] = loaded_language
         return loaded_language
 
@@ -180,7 +193,9 @@ class TreeSitterParser:
             loaded_parser = cast(Parser, self._parser_loader(language))
             return loaded_parser
         except Exception as error:
-            raise TreeSitterGrammarUnavailable(f"missing parser for {language}") from error
+            raise TreeSitterGrammarUnavailable(
+                f"missing parser for {language}"
+            ) from error
 
     def _load_query(self, language: str) -> Query:
         existing = self._queries.get(language)
@@ -192,11 +207,15 @@ class TreeSitterParser:
             query_source = query_path.read_text(encoding="utf-8")
             query = Query(language_object, query_source)
         except Exception as error:
-            raise TreeSitterGrammarUnavailable(f"query unavailable for {language}") from error
+            raise TreeSitterGrammarUnavailable(
+                f"query unavailable for {language}"
+            ) from error
         self._queries[language] = query
         return query
 
-    def _drafts_from_query(self, language: str, root: Node, raw_content: bytes) -> list[_SymbolDraft]:
+    def _drafts_from_query(
+        self, language: str, root: Node, raw_content: bytes
+    ) -> list[_SymbolDraft]:
         query = self._load_query(language)
         drafts: list[_SymbolDraft] = []
         seen: set[tuple[str, int, int, str]] = set()
@@ -213,7 +232,11 @@ class TreeSitterParser:
                         _SymbolDraft(
                             kind=kind,
                             node=node,
-                            name_node=name_node if self._node_contains(node, name_node) else None,
+                            name_node=(
+                                name_node
+                                if self._node_contains(node, name_node)
+                                else None
+                            ),
                             name=name,
                             signature=self._signature_for_node(node, raw_content),
                         )
@@ -227,7 +250,9 @@ class TreeSitterParser:
             return None
         return nodes[0]
 
-    def _name_for_node(self, kind: SymbolKind, node: Node, name_node: Node | None, raw_content: bytes) -> str:
+    def _name_for_node(
+        self, kind: SymbolKind, node: Node, name_node: Node | None, raw_content: bytes
+    ) -> str:
         if name_node is not None and self._node_contains(node, name_node):
             return _node_text(name_node, raw_content)
         field_name = node.child_by_field_name("name")
@@ -273,14 +298,20 @@ class TreeSitterParser:
         current = node.parent
         found_function_parent = False
         while current is not None:
-            if current.type in {"function_definition", "function_declaration", "method_definition"}:
+            if current.type in {
+                "function_definition",
+                "function_declaration",
+                "method_definition",
+            }:
                 found_function_parent = True
             if current.type in {"class_definition", "class_declaration"}:
                 return not found_function_parent
             current = current.parent
         return False
 
-    def _module_record(self, root: Node, path: str, language: str, file_hash: str) -> _SymbolRecord:
+    def _module_record(
+        self, root: Node, path: str, language: str, file_hash: str
+    ) -> _SymbolRecord:
         module_name = Path(path).stem
         module_symbol = Symbol(
             name=module_name,
@@ -300,7 +331,9 @@ class TreeSitterParser:
         )
         return _SymbolRecord(symbol=module_symbol, node=root)
 
-    def _nearest_parent_record(self, records: list[_SymbolRecord], node: Node) -> _SymbolRecord | None:
+    def _nearest_parent_record(
+        self, records: list[_SymbolRecord], node: Node
+    ) -> _SymbolRecord | None:
         candidates = [
             record
             for record in records
@@ -311,7 +344,12 @@ class TreeSitterParser:
         ]
         if not candidates:
             return None
-        return min(candidates, key=lambda record: record.node.end_byte - record.node.start_byte if record.node else 0)
+        return min(
+            candidates,
+            key=lambda record: (
+                record.node.end_byte - record.node.start_byte if record.node else 0
+            ),
+        )
 
     @staticmethod
     def _qualified_name(name: str, parent: _SymbolRecord | None) -> str:
@@ -345,11 +383,15 @@ def _point_tuple(point: object) -> tuple[int, int]:
 def _range_for_node(node: Node) -> Range:
     start_line, start_col = _point_tuple(node.start_point)
     end_line, end_col = _point_tuple(node.end_point)
-    return Range(start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col)
+    return Range(
+        start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col
+    )
 
 
 def _node_text(node: Node, raw_content: bytes) -> str:
-    return raw_content[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+    return raw_content[node.start_byte : node.end_byte].decode(
+        "utf-8", errors="replace"
+    )
 
 
 def _first_statement_line(node: Node, raw_content: bytes) -> str:

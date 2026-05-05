@@ -1,7 +1,18 @@
 """Language Server Protocol provider package."""
 
-from .client import LSPClient, LSP_SYMBOL_CONFIDENCE, LSP_SYMBOL_INDEX_VERSION, LSP_SYMBOL_SOURCE
-from .manager import LSPClientFactory, LSPManager, LSPManagerKey, LSPServerHandle, ManagedLSPClient
+from .client import (
+    LSPClient,
+    LSP_SYMBOL_CONFIDENCE,
+    LSP_SYMBOL_INDEX_VERSION,
+    LSP_SYMBOL_SOURCE,
+)
+from .manager import (
+    LSPClientFactory,
+    LSPManager,
+    LSPManagerKey,
+    LSPServerHandle,
+    ManagedLSPClient,
+)
 from .provider import LSPProvider
 from .registry import (
     DEFAULT_LANGUAGE_SERVER_SPECS,

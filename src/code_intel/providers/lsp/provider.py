@@ -58,7 +58,9 @@ class _HealthState(str, Enum):
 
 
 class _ProviderLSPClient(Protocol):
-    async def goto_definition(self, path: str, *, line: int, character: int) -> list[Location]: ...
+    async def goto_definition(
+        self, path: str, *, line: int, character: int
+    ) -> list[Location]: ...
 
     async def find_references(
         self,
@@ -69,13 +71,17 @@ class _ProviderLSPClient(Protocol):
         include_declaration: bool = True,
     ) -> list[Location]: ...
 
-    async def hover(self, path: str, *, line: int, character: int) -> HoverInfo | None: ...
+    async def hover(
+        self, path: str, *, line: int, character: int
+    ) -> HoverInfo | None: ...
 
     async def document_symbols(self, path: str) -> list[Symbol]: ...
 
     async def diagnostics(self, path: str) -> list[Diagnostic]: ...
 
-    async def did_open(self, path: str, *, language_id: str, text: str, version: int) -> None: ...
+    async def did_open(
+        self, path: str, *, language_id: str, text: str, version: int
+    ) -> None: ...
 
     async def did_change(self, path: str, *, text: str, version: int) -> None: ...
 
@@ -107,9 +113,11 @@ class LSPProvider:
         self._diagnostics_cache: dict[str, list[Diagnostic]] = {}
         self._document_versions: dict[str, int] = {}
         self._open_documents: set[str] = set()
-        self._language_context: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-            f"lsp_provider_language_{id(self)}",
-            default=None,
+        self._language_context: contextvars.ContextVar[str | None] = (
+            contextvars.ContextVar(
+                f"lsp_provider_language_{id(self)}",
+                default=None,
+            )
         )
 
     async def supports(self, capability: Capability, language: str) -> bool:
@@ -120,7 +128,9 @@ class LSPProvider:
         if state in {_HealthState.UNHEALTHY, _HealthState.PERMANENTLY_UNHEALTHY}:
             cached = self._capabilities_by_language.get(language, set())
             if not cached:
-                raise ProviderUnavailable(self._health_messages.get(language, "语言服务器不可用。"))
+                raise ProviderUnavailable(
+                    self._health_messages.get(language, "语言服务器不可用。")
+                )
             return capability in cached
         capabilities = await self._ensure_capabilities(language)
         return capability in capabilities
@@ -131,18 +141,30 @@ class LSPProvider:
             return await self.check_health(language)
         if not self._health_states:
             return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
-        if any(state == _HealthState.PERMANENTLY_UNHEALTHY for state in self._health_states.values()):
+        if any(
+            state == _HealthState.PERMANENTLY_UNHEALTHY
+            for state in self._health_states.values()
+        ):
             return ProviderHealth(
                 status=ProviderStatus.UNAVAILABLE,
                 health_score=0.0,
                 message="permanently_unhealthy",
             )
-        if any(state == _HealthState.UNHEALTHY for state in self._health_states.values()):
-            return ProviderHealth(status=ProviderStatus.DEGRADED, health_score=0.4, message="unhealthy")
+        if any(
+            state == _HealthState.UNHEALTHY for state in self._health_states.values()
+        ):
+            return ProviderHealth(
+                status=ProviderStatus.DEGRADED, health_score=0.4, message="unhealthy"
+            )
         return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
 
-    async def confidence_for(self, capability: Capability, language: str) -> ConfidenceClass:
-        if language in self.languages and capability in self._capabilities_by_language.get(language, set()):
+    async def confidence_for(
+        self, capability: Capability, language: str
+    ) -> ConfidenceClass:
+        if (
+            language in self.languages
+            and capability in self._capabilities_by_language.get(language, set())
+        ):
             return ConfidenceClass.HIGH
         return ConfidenceClass.LOW
 
@@ -194,14 +216,18 @@ class LSPProvider:
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
         client = await self._client_for_language(language, Capability.DOCUMENT_SYMBOLS)
-        return await self._with_unhealthy_on_unavailable(language, client.document_symbols(relative_path))
+        return await self._with_unhealthy_on_unavailable(
+            language, client.document_symbols(relative_path)
+        )
 
     async def diagnostics(self, path: str) -> list[Diagnostic]:
         relative_path = self._validate_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
         client = await self._client_for_language(language, Capability.DIAGNOSTICS)
-        diagnostics = await self._with_unhealthy_on_unavailable(language, client.diagnostics(relative_path))
+        diagnostics = await self._with_unhealthy_on_unavailable(
+            language, client.diagnostics(relative_path)
+        )
         self._diagnostics_cache[relative_path] = diagnostics
         return list(diagnostics)
 
@@ -213,7 +239,9 @@ class LSPProvider:
         version = self._next_document_version(relative_path)
         await self._with_unhealthy_on_unavailable(
             language,
-            client.did_open(relative_path, language_id=language, text=content, version=version),
+            client.did_open(
+                relative_path, language_id=language, text=content, version=version
+            ),
         )
         self._open_documents.add(relative_path)
 
@@ -237,7 +265,9 @@ class LSPProvider:
         if relative_path not in self._open_documents and content is not None:
             await self.notify_did_open(relative_path, content)
         client = await self._client_for_language(language, Capability.DIAGNOSTICS)
-        await self._with_unhealthy_on_unavailable(language, client.did_save(relative_path, text=content))
+        await self._with_unhealthy_on_unavailable(
+            language, client.did_save(relative_path, text=content)
+        )
 
     async def restart(self, language: str) -> ProviderHealth:
         """Explicit restart hook; a successful restart clears permanent unhealthy state."""
@@ -254,7 +284,9 @@ class LSPProvider:
             self._record_restart_failure(language, error)
             return self._health_for_language(language)
         except Exception:
-            self._record_restart_failure(language, ProviderUnavailable("语言服务器重启失败。"))
+            self._record_restart_failure(
+                language, ProviderUnavailable("语言服务器重启失败。")
+            )
             return self._health_for_language(language)
         _ = self._record_capabilities(language, handle.capabilities)
         self._health_states[language] = _HealthState.HEALTHY
@@ -275,10 +307,14 @@ class LSPProvider:
             self._mark_unhealthy(language, error)
             return self._health_for_language(language)
         except Exception:
-            self._mark_unhealthy(language, ProviderUnavailable("语言服务器健康检查失败。"))
+            self._mark_unhealthy(
+                language, ProviderUnavailable("语言服务器健康检查失败。")
+            )
             return self._health_for_language(language)
         if not running:
-            self._mark_unhealthy(language, ProviderUnavailable("language server is not running"))
+            self._mark_unhealthy(
+                language, ProviderUnavailable("language server is not running")
+            )
             return self._health_for_language(language)
         self._health_states[language] = _HealthState.HEALTHY
         _ = self._health_messages.pop(language, None)
@@ -292,25 +328,39 @@ class LSPProvider:
             self._document_versions.clear()
             self._diagnostics_cache.clear()
             return
-        for path in [path for path in self._open_documents if self._language_for_path(path) == language]:
+        for path in [
+            path
+            for path in self._open_documents
+            if self._language_for_path(path) == language
+        ]:
             self._open_documents.discard(path)
 
-    async def _client_for_language(self, language: str, capability: Capability) -> _ProviderLSPClient:
+    async def _client_for_language(
+        self, language: str, capability: Capability
+    ) -> _ProviderLSPClient:
         await self._ensure_operation_supported(language, capability)
         handle = await self._ensure_handle(language)
         return cast(_ProviderLSPClient, cast(object, handle.client))
 
-    async def _ensure_operation_supported(self, language: str, capability: Capability) -> None:
+    async def _ensure_operation_supported(
+        self, language: str, capability: Capability
+    ) -> None:
         state = self._health_states.get(language, _HealthState.HEALTHY)
         if state in {_HealthState.UNHEALTHY, _HealthState.PERMANENTLY_UNHEALTHY}:
-            raise ProviderUnavailable(self._health_messages.get(language, "语言服务器不可用。"))
+            raise ProviderUnavailable(
+                self._health_messages.get(language, "语言服务器不可用。")
+            )
         capabilities = await self._ensure_capabilities(language)
         if capability not in capabilities:
             raise ProviderUnavailable(f"语言服务器不支持 {capability.value}。")
 
     async def _ensure_capabilities(self, language: str) -> set[Capability]:
         cached = self._capabilities_by_language.get(language)
-        if cached is not None and self._health_states.get(language, _HealthState.HEALTHY) == _HealthState.HEALTHY:
+        if (
+            cached is not None
+            and self._health_states.get(language, _HealthState.HEALTHY)
+            == _HealthState.HEALTHY
+        ):
             return cached
         handle = await self._ensure_handle(language)
         return self._record_capabilities(language, handle.capabilities)
@@ -330,7 +380,9 @@ class LSPProvider:
         _ = self._restart_failures.setdefault(language, 0)
         return handle
 
-    async def _with_unhealthy_on_unavailable(self, language: str, operation: Awaitable[T]) -> T:
+    async def _with_unhealthy_on_unavailable(
+        self, language: str, operation: Awaitable[T]
+    ) -> T:
         try:
             return await operation
         except ProviderUnavailable as error:
@@ -339,10 +391,16 @@ class LSPProvider:
         except LSPTimeout:
             raise
 
-    def _record_capabilities(self, language: str, server_capabilities: lsp_types.ServerCapabilities) -> set[Capability]:
+    def _record_capabilities(
+        self, language: str, server_capabilities: lsp_types.ServerCapabilities
+    ) -> set[Capability]:
         capabilities = self._capabilities_from_server(server_capabilities)
         self._capabilities_by_language[language] = capabilities
-        self.capabilities = set().union(*self._capabilities_by_language.values()) if self._capabilities_by_language else set()
+        self.capabilities = (
+            set().union(*self._capabilities_by_language.values())
+            if self._capabilities_by_language
+            else set()
+        )
         return capabilities
 
     def _mark_unhealthy(self, language: str, error: ProviderUnavailable) -> None:
@@ -350,7 +408,9 @@ class LSPProvider:
         detail = error.detail or "语言服务器不可用。"
         self._health_messages[language] = f"unhealthy: {detail}"
 
-    def _record_restart_failure(self, language: str, error: ProviderUnavailable) -> None:
+    def _record_restart_failure(
+        self, language: str, error: ProviderUnavailable
+    ) -> None:
         failures = self._restart_failures.get(language, 0) + 1
         self._restart_failures[language] = failures
         detail = error.detail or "语言服务器重启失败。"
@@ -378,7 +438,9 @@ class LSPProvider:
         return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
 
     @classmethod
-    def _capabilities_from_server(cls, server_capabilities: lsp_types.ServerCapabilities) -> set[Capability]:
+    def _capabilities_from_server(
+        cls, server_capabilities: lsp_types.ServerCapabilities
+    ) -> set[Capability]:
         capabilities: set[Capability] = set()
         if cls._server_capability_enabled(server_capabilities.definition_provider):
             capabilities.add(Capability.DEFINITION)
@@ -388,9 +450,9 @@ class LSPProvider:
             capabilities.add(Capability.HOVER)
         if cls._server_capability_enabled(server_capabilities.document_symbol_provider):
             capabilities.add(Capability.DOCUMENT_SYMBOLS)
-        if cls._server_capability_enabled(server_capabilities.diagnostic_provider) or cls._text_sync_enabled(
-            server_capabilities.text_document_sync
-        ):
+        if cls._server_capability_enabled(
+            server_capabilities.diagnostic_provider
+        ) or cls._text_sync_enabled(server_capabilities.text_document_sync):
             capabilities.add(Capability.DIAGNOSTICS)
         return capabilities
 
@@ -423,7 +485,9 @@ class LSPProvider:
 
     def _language_for_path(self, path: str) -> str:
         relative_path = self._validate_path(path)
-        language = _LANGUAGE_BY_EXTENSION.get(PurePosixPath(relative_path).suffix.casefold())
+        language = _LANGUAGE_BY_EXTENSION.get(
+            PurePosixPath(relative_path).suffix.casefold()
+        )
         if language is None or language not in self.languages:
             raise ProviderUnavailable("当前文件没有可用的 LSP 语言服务器。")
         return language

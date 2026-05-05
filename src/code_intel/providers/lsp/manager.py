@@ -78,7 +78,12 @@ def _default_client_factory(
     command: Sequence[str],
 ) -> ManagedLSPClient:
     transport = LSPTransport(command, cwd=workspace_root)
-    return LSPClient(transport, workspace_root=workspace_root, language=spec.language, source=spec.name)
+    return LSPClient(
+        transport,
+        workspace_root=workspace_root,
+        language=spec.language,
+        source=spec.name,
+    )
 
 
 class LSPManager:
@@ -92,9 +97,13 @@ class LSPManager:
         client_factory: LSPClientFactory | None = None,
         idle_timeout_seconds: float = _DEFAULT_IDLE_TIMEOUT_SECONDS,
     ) -> None:
-        self.workspace_root: Path = Path(workspace_root).expanduser().resolve(strict=False)
+        self.workspace_root: Path = (
+            Path(workspace_root).expanduser().resolve(strict=False)
+        )
         self._specs: dict[str, LanguageServerSpec] = language_server_specs(specs)
-        self._client_factory: LSPClientFactory = client_factory or _default_client_factory
+        self._client_factory: LSPClientFactory = (
+            client_factory or _default_client_factory
+        )
         self.idle_timeout_seconds: float = max(0.0, idle_timeout_seconds)
         self._handles: dict[LSPManagerKey, LSPServerHandle] = {}
 
@@ -138,7 +147,9 @@ class LSPManager:
 
         await self.detect_server(language)
 
-        client = self._client_factory(spec, self.workspace_root, tuple(spec.launch_command))
+        client = self._client_factory(
+            spec, self.workspace_root, tuple(spec.launch_command)
+        )
         started_at = time.monotonic()
         try:
             initialize_result = await client.initialize(
@@ -217,7 +228,8 @@ class LSPManager:
         idle_keys = [
             key
             for key, handle in self._handles.items()
-            if handle.idle_timeout_seconds >= 0.0 and handle.idle_for(reference_time) >= handle.idle_timeout_seconds
+            if handle.idle_timeout_seconds >= 0.0
+            and handle.idle_for(reference_time) >= handle.idle_timeout_seconds
         ]
         for key in idle_keys:
             handle = self._handles.pop(key, None)
@@ -245,7 +257,13 @@ class LSPManager:
 
     @staticmethod
     def _init_options_hash(init_options: dict[str, object]) -> str:
-        payload = json.dumps(init_options, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        payload = json.dumps(
+            init_options,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
         import hashlib
 
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
@@ -253,7 +271,9 @@ class LSPManager:
     async def _run_detect_command(self, spec: LanguageServerSpec) -> None:
         command = tuple(spec.detect_command)
         if not command:
-            raise ProviderUnavailable(self._detect_failure_message(spec, "检测命令为空"))
+            raise ProviderUnavailable(
+                self._detect_failure_message(spec, "检测命令为空")
+            )
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -262,7 +282,9 @@ class LSPManager:
                 cwd=str(self.workspace_root),
             )
         except OSError:
-            raise ProviderUnavailable(self._detect_failure_message(spec, "检测命令无法执行")) from None
+            raise ProviderUnavailable(
+                self._detect_failure_message(spec, "检测命令无法执行")
+            ) from None
 
         try:
             _stdout, _stderr = await asyncio.wait_for(
@@ -275,10 +297,16 @@ class LSPManager:
             except ProcessLookupError:
                 pass
             _ = await process.wait()
-            raise ProviderUnavailable(self._detect_failure_message(spec, "检测命令超时")) from None
+            raise ProviderUnavailable(
+                self._detect_failure_message(spec, "检测命令超时")
+            ) from None
 
         if process.returncode != 0:
-            raise ProviderUnavailable(self._detect_failure_message(spec, f"检测命令退出码 {process.returncode}"))
+            raise ProviderUnavailable(
+                self._detect_failure_message(
+                    spec, f"检测命令退出码 {process.returncode}"
+                )
+            )
 
     @staticmethod
     def _detect_failure_message(spec: LanguageServerSpec, reason: str) -> str:

@@ -39,10 +39,7 @@ async def coordinate(state: AgentState) -> AgentState:
     with tracer.span("coordinator") as parent_span_id:
         coordinator_id = f"coordinator-{uuid.uuid4().hex[:8]}"
 
-        is_replan = (
-            state.get("review_decision") == "add_tasks"
-            and state.get("tasks")
-        )
+        is_replan = state.get("review_decision") == "add_tasks" and state.get("tasks")
 
         if is_replan:
             # Re-planning mode: add new sub-tasks based on reviewer feedback
@@ -74,7 +71,9 @@ async def coordinate(state: AgentState) -> AgentState:
             all_tasks = existing_tasks + new_tasks
 
             tin, tout, model = TokenTrackerCallback.snapshot()
-            tracer.record_tokens(parent_span_id, tokens_in=tin, tokens_out=tout, model=model)
+            tracer.record_tokens(
+                parent_span_id, tokens_in=tin, tokens_out=tout, model=model
+            )
 
             coordinator_meta = AgentMeta(
                 role="coordinator",
@@ -115,7 +114,9 @@ async def coordinate(state: AgentState) -> AgentState:
         tasks, result = await decompose_node(state["input"])
 
         tin, tout, model = TokenTrackerCallback.snapshot()
-        tracer.record_tokens(parent_span_id, tokens_in=tin, tokens_out=tout, model=model)
+        tracer.record_tokens(
+            parent_span_id, tokens_in=tin, tokens_out=tout, model=model
+        )
 
         coordinator_meta = AgentMeta(
             role="coordinator",

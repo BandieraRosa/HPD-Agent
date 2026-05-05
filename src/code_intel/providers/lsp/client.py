@@ -26,7 +26,6 @@ from src.code_intel.core.errors import CodeIntelError
 from src.code_intel.core.models import validate_workspace_relative_path
 from src.code_intel.tracing import result_count, trace_span
 
-
 LSP_SYMBOL_SOURCE = "lsp"
 LSP_SYMBOL_INDEX_VERSION = "lsp:document-symbol-v1"
 LSP_SYMBOL_CONFIDENCE = 0.85
@@ -45,11 +44,15 @@ class _LSPNotificationHandler(Protocol):
 
 
 class _LSPTransport(Protocol):
-    async def add_notification_handler(self, method: str, handler: _LSPNotificationHandler) -> None: ...
+    async def add_notification_handler(
+        self, method: str, handler: _LSPNotificationHandler
+    ) -> None: ...
 
     async def start(self) -> None: ...
 
-    async def request(self, method: str, params: object | None = None, *, timeout: float | None = None) -> object | None: ...
+    async def request(
+        self, method: str, params: object | None = None, *, timeout: float | None = None
+    ) -> object | None: ...
 
     async def notify(self, method: str, params: object | None = None) -> None: ...
 
@@ -70,7 +73,9 @@ class LSPClient:
         source: str = LSP_SYMBOL_SOURCE,
     ) -> None:
         self._transport: _LSPTransport = transport
-        self._workspace_root: Path = Path(workspace_root).expanduser().resolve(strict=False)
+        self._workspace_root: Path = (
+            Path(workspace_root).expanduser().resolve(strict=False)
+        )
         self._language: str = language
         self._source: str = source
         self._converter: _LSPConverter = cast(_LSPConverter, get_converter())
@@ -101,11 +106,15 @@ class LSPClient:
             initialization_options=initialization_options,
         )
         result = await self._request_typed(lsp_types.INITIALIZE, params)
-        initialize_result = self._structure(result, lsp_types.InitializeResult, "invalid initialize response")
+        initialize_result = self._structure(
+            result, lsp_types.InitializeResult, "invalid initialize response"
+        )
         await self._transport.notify(lsp_types.INITIALIZED, {})
         return initialize_result
 
-    async def did_open(self, path: str, *, language_id: str, text: str, version: int) -> None:
+    async def did_open(
+        self, path: str, *, language_id: str, text: str, version: int
+    ) -> None:
         relative_path = self._validate_path(path)
         params = lsp_types.DidOpenTextDocumentParams(
             text_document=lsp_types.TextDocumentItem(
@@ -124,22 +133,30 @@ class LSPClient:
                 uri=self._path_to_uri(relative_path),
                 version=version,
             ),
-            content_changes=[lsp_types.TextDocumentContentChangeWholeDocument(text=text)],
+            content_changes=[
+                lsp_types.TextDocumentContentChangeWholeDocument(text=text)
+            ],
         )
         await self._notify_typed(lsp_types.TEXT_DOCUMENT_DID_CHANGE, params)
 
     async def did_save(self, path: str, *, text: str | None = None) -> None:
         relative_path = self._validate_path(path)
         params = lsp_types.DidSaveTextDocumentParams(
-            text_document=lsp_types.TextDocumentIdentifier(uri=self._path_to_uri(relative_path)),
+            text_document=lsp_types.TextDocumentIdentifier(
+                uri=self._path_to_uri(relative_path)
+            ),
             text=text,
         )
         await self._notify_typed(lsp_types.TEXT_DOCUMENT_DID_SAVE, params)
 
-    async def goto_definition(self, path: str, *, line: int, character: int) -> list[Location]:
+    async def goto_definition(
+        self, path: str, *, line: int, character: int
+    ) -> list[Location]:
         relative_path = self._validate_path(path)
         params = lsp_types.DefinitionParams(
-            text_document=lsp_types.TextDocumentIdentifier(uri=self._path_to_uri(relative_path)),
+            text_document=lsp_types.TextDocumentIdentifier(
+                uri=self._path_to_uri(relative_path)
+            ),
             position=lsp_types.Position(line=line, character=character),
         )
         result = await self._request_typed(lsp_types.TEXT_DOCUMENT_DEFINITION, params)
@@ -155,7 +172,9 @@ class LSPClient:
     ) -> list[Location]:
         relative_path = self._validate_path(path)
         params = lsp_types.ReferenceParams(
-            text_document=lsp_types.TextDocumentIdentifier(uri=self._path_to_uri(relative_path)),
+            text_document=lsp_types.TextDocumentIdentifier(
+                uri=self._path_to_uri(relative_path)
+            ),
             position=lsp_types.Position(line=line, character=character),
             context=lsp_types.ReferenceContext(include_declaration=include_declaration),
         )
@@ -165,7 +184,9 @@ class LSPClient:
     async def hover(self, path: str, *, line: int, character: int) -> HoverInfo | None:
         relative_path = self._validate_path(path)
         params = lsp_types.HoverParams(
-            text_document=lsp_types.TextDocumentIdentifier(uri=self._path_to_uri(relative_path)),
+            text_document=lsp_types.TextDocumentIdentifier(
+                uri=self._path_to_uri(relative_path)
+            ),
             position=lsp_types.Position(line=line, character=character),
         )
         result = await self._request_typed(lsp_types.TEXT_DOCUMENT_HOVER, params)
@@ -174,7 +195,9 @@ class LSPClient:
         if not isinstance(result, dict):
             raise ProviderUnavailable("invalid hover response")
         hover_payload = cast(dict[str, object], result)
-        hover = self._structure(hover_payload, lsp_types.Hover, "invalid hover response")
+        hover = self._structure(
+            hover_payload, lsp_types.Hover, "invalid hover response"
+        )
         return HoverInfo(
             contents=self._hover_contents_to_text(hover.contents),
             range=None if hover.range is None else self._core_range(hover.range),
@@ -185,9 +208,13 @@ class LSPClient:
         await self.start()
         relative_path = self._validate_path(path)
         params = lsp_types.DocumentSymbolParams(
-            text_document=lsp_types.TextDocumentIdentifier(uri=self._path_to_uri(relative_path))
+            text_document=lsp_types.TextDocumentIdentifier(
+                uri=self._path_to_uri(relative_path)
+            )
         )
-        result = await self._request_typed(lsp_types.TEXT_DOCUMENT_DOCUMENT_SYMBOL, params)
+        result = await self._request_typed(
+            lsp_types.TEXT_DOCUMENT_DOCUMENT_SYMBOL, params
+        )
         if result is None:
             return []
         if not isinstance(result, list):
@@ -208,8 +235,16 @@ class LSPClient:
                 if converted is not None:
                     symbols.append(converted)
                 continue
-            document_symbol = self._structure(item_payload, lsp_types.DocumentSymbol, "invalid document symbol response")
-            symbols.extend(self._symbols_from_document_symbol(document_symbol, relative_path, None, None))
+            document_symbol = self._structure(
+                item_payload,
+                lsp_types.DocumentSymbol,
+                "invalid document symbol response",
+            )
+            symbols.extend(
+                self._symbols_from_document_symbol(
+                    document_symbol, relative_path, None, None
+                )
+            )
         return symbols
 
     async def diagnostics(self, path: str) -> list[Diagnostic]:
@@ -234,13 +269,17 @@ class LSPClient:
     async def is_running(self) -> bool:
         return await self._transport.is_running()
 
-    async def _request_typed(self, method: str, params: object | None = None) -> object | None:
+    async def _request_typed(
+        self, method: str, params: object | None = None
+    ) -> object | None:
         with trace_span(
             f"lsp.{self._source}.{method}",
             {"provider_name": self._source, "language": self._language},
         ) as span:
             try:
-                payload = None if params is None else self._converter.unstructure(params)
+                payload = (
+                    None if params is None else self._converter.unstructure(params)
+                )
                 result = await self._transport.request(method, payload)
                 span.add_metadata({"result_count": result_count(result)})
                 return result
@@ -257,7 +296,9 @@ class LSPClient:
             {"provider_name": self._source, "language": self._language},
         ) as span:
             try:
-                payload = None if params is None else self._converter.unstructure(params)
+                payload = (
+                    None if params is None else self._converter.unstructure(params)
+                )
                 await self._transport.notify(method, payload)
                 span.add_metadata({"result_count": 0})
             except ProviderUnavailable:
@@ -281,7 +322,9 @@ class LSPClient:
         path = self._path_from_uri(params.uri)
         if path is None:
             return
-        self._diagnostics_by_path[path] = [self._core_diagnostic(path, diagnostic) for diagnostic in params.diagnostics]
+        self._diagnostics_by_path[path] = [
+            self._core_diagnostic(path, diagnostic) for diagnostic in params.diagnostics
+        ]
 
     def _definition_locations(self, payload: object | None) -> list[Location]:
         if payload is None:
@@ -293,10 +336,16 @@ class LSPClient:
                 raise ProviderUnavailable("invalid definition response")
             item_payload = cast(dict[str, object], item)
             if "targetUri" in item_payload:
-                link = self._structure(item_payload, lsp_types.LocationLink, "invalid definition location link")
+                link = self._structure(
+                    item_payload,
+                    lsp_types.LocationLink,
+                    "invalid definition location link",
+                )
                 location = self._core_location_from_link(link)
             else:
-                lsp_location = self._structure(item_payload, lsp_types.Location, "invalid definition location")
+                lsp_location = self._structure(
+                    item_payload, lsp_types.Location, "invalid definition location"
+                )
                 location = self._core_location_from_lsp(lsp_location)
             if location is not None:
                 locations.append(location)
@@ -311,7 +360,11 @@ class LSPClient:
         for item in cast(list[object], payload):
             if not isinstance(item, dict):
                 raise ProviderUnavailable("invalid reference location")
-            lsp_location = self._structure(cast(dict[str, object], item), lsp_types.Location, "invalid reference location")
+            lsp_location = self._structure(
+                cast(dict[str, object], item),
+                lsp_types.Location,
+                "invalid reference location",
+            )
             location = self._core_location_from_lsp(lsp_location)
             if location is not None:
                 locations.append(location)
@@ -329,7 +382,9 @@ class LSPClient:
             return None
         return Location(path=path, range=self._core_range(link.target_selection_range))
 
-    def _structure(self, payload: object, model_type: type[ModelT], detail: str) -> ModelT:
+    def _structure(
+        self, payload: object, model_type: type[ModelT], detail: str
+    ) -> ModelT:
         try:
             return self._converter.structure(payload, model_type)
         except Exception:
@@ -342,7 +397,11 @@ class LSPClient:
         parent_id: str | None,
         parent_qualified_name: str | None,
     ) -> list[Symbol]:
-        qualified_name = f"{parent_qualified_name}.{symbol.name}" if parent_qualified_name else symbol.name
+        qualified_name = (
+            f"{parent_qualified_name}.{symbol.name}"
+            if parent_qualified_name
+            else symbol.name
+        )
         core_symbol = Symbol(
             name=symbol.name,
             qualified_name=qualified_name,
@@ -362,14 +421,24 @@ class LSPClient:
         symbols = [core_symbol]
         children: Sequence[lsp_types.DocumentSymbol] = symbol.children or ()
         for child in children:
-            symbols.extend(self._symbols_from_document_symbol(child, path, core_symbol.id, qualified_name))
+            symbols.extend(
+                self._symbols_from_document_symbol(
+                    child, path, core_symbol.id, qualified_name
+                )
+            )
         return symbols
 
-    def _symbol_from_information(self, symbol: lsp_types.SymbolInformation) -> Symbol | None:
+    def _symbol_from_information(
+        self, symbol: lsp_types.SymbolInformation
+    ) -> Symbol | None:
         path = self._path_from_uri(symbol.location.uri)
         if path is None:
             return None
-        qualified_name = f"{symbol.container_name}.{symbol.name}" if symbol.container_name else symbol.name
+        qualified_name = (
+            f"{symbol.container_name}.{symbol.name}"
+            if symbol.container_name
+            else symbol.name
+        )
         return Symbol(
             name=symbol.name,
             qualified_name=qualified_name,
@@ -387,7 +456,9 @@ class LSPClient:
             index_version=LSP_SYMBOL_INDEX_VERSION,
         )
 
-    def _core_diagnostic(self, path: str, diagnostic: lsp_types.Diagnostic) -> Diagnostic:
+    def _core_diagnostic(
+        self, path: str, diagnostic: lsp_types.Diagnostic
+    ) -> Diagnostic:
         severity = self._diagnostic_severity(diagnostic.severity)
         code = None if diagnostic.code is None else str(diagnostic.code)
         source = diagnostic.source or self._source
@@ -439,7 +510,9 @@ class LSPClient:
         return mapping.get(kind, SymbolKind.VARIABLE)
 
     @staticmethod
-    def _diagnostic_severity(severity: lsp_types.DiagnosticSeverity | None) -> DiagnosticSeverity:
+    def _diagnostic_severity(
+        severity: lsp_types.DiagnosticSeverity | None,
+    ) -> DiagnosticSeverity:
         if severity == lsp_types.DiagnosticSeverity.Error:
             return DiagnosticSeverity.ERROR
         if severity == lsp_types.DiagnosticSeverity.Warning:

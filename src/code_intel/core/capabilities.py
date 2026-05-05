@@ -55,7 +55,9 @@ class ContextPart(str, Enum):
 class ProviderHealth(BaseModel):
     """Provider health data used by later kernel fallback decisions."""
 
-    status: ProviderStatus = Field(description="Machine-readable provider health state.")
+    status: ProviderStatus = Field(
+        description="Machine-readable provider health state."
+    )
     health_score: float = Field(
         default=1.0,
         ge=0.0,
@@ -63,7 +65,9 @@ class ProviderHealth(BaseModel):
         validation_alias=AliasChoices("health_score", "score"),
         description="Health score used as a routing tie-breaker, from 0.0 to 1.0.",
     )
-    message: str | None = Field(default=None, description="Optional machine/log-facing health detail.")
+    message: str | None = Field(
+        default=None, description="Optional machine/log-facing health detail."
+    )
 
     @property
     def score(self) -> float:

@@ -37,7 +37,11 @@ _LABEL_FIELDS = {"provider_name", "capability", "language"}
 _BOOL_FIELDS = {"cache_hit", "truncated"}
 _PATH_FIELDS = {"path", "workspace_relative_path"}
 _PATH_LIST_FIELDS = {"paths", "workspace_relative_paths"}
-_DIAGNOSTIC_MESSAGE_FIELDS = {"diagnostic_messages", "diagnostic_templates", "diagnostics"}
+_DIAGNOSTIC_MESSAGE_FIELDS = {
+    "diagnostic_messages",
+    "diagnostic_templates",
+    "diagnostics",
+}
 _DEFAULT_ERROR_CODE = "code_intel_error"
 _DEFAULT_ERROR_MESSAGE = "代码智能服务发生错误。"
 _MAX_LABEL_CHARS = 80
@@ -51,6 +55,7 @@ _LINE_REF_RE = re.compile(r"\b([Ll]ines?)\s+\d+(?:\s*(?:-|to|through)\s*\d+)?")
 _COLUMN_REF_RE = re.compile(r"\b([Cc]ol(?:umn)?s?)\s+\d+")
 _FLOAT_RE = re.compile(r"(?<![\w.])-?\d+\.\d+(?![\w.])")
 _INTEGER_RE = re.compile(r"(?<![\w.])-?\d+(?![\w.])")
+
 
 class _TracerLike(Protocol):
     def start_span(
@@ -75,7 +80,14 @@ class _TracerLike(Protocol):
 class CodeIntelTraceSpan:
     """Exception-safe wrapper around the shared observability tracer."""
 
-    __slots__: Final = ("_name", "_input_metadata", "_metadata", "_span_id", "_started_at", "_tracer")
+    __slots__: Final = (
+        "_name",
+        "_input_metadata",
+        "_metadata",
+        "_span_id",
+        "_started_at",
+        "_tracer",
+    )
 
     def __init__(self, name: str, metadata: Mapping[str, object] | None = None) -> None:
         self._name: str = name
@@ -134,7 +146,9 @@ class CodeIntelTraceSpan:
             return
 
 
-def trace_span(name: str, metadata: Mapping[str, object] | None = None) -> CodeIntelTraceSpan:
+def trace_span(
+    name: str, metadata: Mapping[str, object] | None = None
+) -> CodeIntelTraceSpan:
     """Return a safe span context manager using the shared observability tracer."""
     return CodeIntelTraceSpan(name, metadata)
 
@@ -191,7 +205,9 @@ def redact(
             if paths:
                 output[key] = paths
             continue
-        if key == "error" and ("error" in allowed or "error.code" in allowed or "error.message" in allowed):
+        if key == "error" and (
+            "error" in allowed or "error.code" in allowed or "error.message" in allowed
+        ):
             error = _safe_error_mapping(value)
             if error:
                 output["error"] = error
@@ -309,10 +325,16 @@ def _safe_workspace_path_list(value: object) -> list[str]:
 
 def _safe_error_mapping(value: object) -> dict[str, str]:
     if isinstance(value, ToolError):
-        return {"code": _safe_error_code(value.code) or _DEFAULT_ERROR_CODE, "message": _safe_chinese_message(value.message)}
+        return {
+            "code": _safe_error_code(value.code) or _DEFAULT_ERROR_CODE,
+            "message": _safe_chinese_message(value.message),
+        }
     if isinstance(value, CodeIntelError):
         tool_error = value.to_tool_error()
-        return {"code": _safe_error_code(tool_error.code) or _DEFAULT_ERROR_CODE, "message": _safe_chinese_message(tool_error.message)}
+        return {
+            "code": _safe_error_code(tool_error.code) or _DEFAULT_ERROR_CODE,
+            "message": _safe_chinese_message(tool_error.message),
+        }
     if not isinstance(value, Mapping):
         return {"code": _DEFAULT_ERROR_CODE, "message": _DEFAULT_ERROR_MESSAGE}
     mapping = cast(Mapping[object, object], value)
@@ -377,7 +399,9 @@ def _normalize_diagnostic_message(message: str) -> str:
     normalized = _LINE_COL_TUPLE_RE.sub("(<line>, <column>)", normalized)
     normalized = _LINE_COLON_RE.sub(":<line>:<column>", normalized)
     normalized = _LINE_REF_RE.sub(lambda match: f"{match.group(1)} <line>", normalized)
-    normalized = _COLUMN_REF_RE.sub(lambda match: f"{match.group(1)} <column>", normalized)
+    normalized = _COLUMN_REF_RE.sub(
+        lambda match: f"{match.group(1)} <column>", normalized
+    )
     normalized = _FLOAT_RE.sub("<float>", normalized)
     normalized = _INTEGER_RE.sub("<int>", normalized)
     return " ".join(normalized.split())

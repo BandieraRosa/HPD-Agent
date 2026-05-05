@@ -11,9 +11,15 @@ class LanguageDetection(BaseModel):
     """Language detection result supplied by callers or later provider layers."""
 
     path: str = Field(description="Workspace-relative path using forward slashes.")
-    language: str = Field(description="Detected lowercase language identifier, such as python.")
-    confidence: float = Field(ge=0.0, le=1.0, description="Detection confidence from 0.0 to 1.0.")
-    source: str = Field(default="unknown", description="Machine-readable detection source.")
+    language: str = Field(
+        description="Detected lowercase language identifier, such as python."
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0, description="Detection confidence from 0.0 to 1.0."
+    )
+    source: str = Field(
+        default="unknown", description="Machine-readable detection source."
+    )
 
     @field_validator("path")
     @classmethod
@@ -35,7 +41,9 @@ class Workspace(BaseModel):
         validation_alias=AliasChoices("root_path", "workspace_root", "root"),
         description="Workspace root path supplied by the caller; not checked on disk.",
     )
-    name: str | None = Field(default=None, description="Optional workspace display name.")
+    name: str | None = Field(
+        default=None, description="Optional workspace display name."
+    )
     languages: set[str] = Field(
         default_factory=set,
         description="Declared language identifiers known for this workspace.",

@@ -46,7 +46,11 @@ _CAPABILITY_METHODS: dict[Capability, str] = {
     Capability.TEXT_SEARCH: "text_search",
 }
 _INDEX_PROVIDER_NAME = "symbol_index"
-_SEMANTIC_PLACEHOLDER_CAPABILITIES = {Capability.DEFINITION, Capability.REFERENCES, Capability.HOVER}
+_SEMANTIC_PLACEHOLDER_CAPABILITIES = {
+    Capability.DEFINITION,
+    Capability.REFERENCES,
+    Capability.HOVER,
+}
 
 
 class _DynamicMethod(Protocol):
@@ -57,12 +61,25 @@ class ProviderAttemptTrace(BaseModel):
     """Safe routing trace for one provider candidate."""
 
     provider: str = Field(description="Provider name recorded for routing diagnostics.")
-    confidence: ConfidenceClass = Field(description="Provider confidence class for the requested capability.")
-    health: ProviderHealth = Field(description="Health snapshot used by this routing decision.")
-    attempted: bool = Field(default=False, description="Whether the kernel invoked this provider.")
-    selected: bool = Field(default=False, description="Whether this provider returned the selected result.")
-    fallback: bool = Field(default=False, description="Whether the kernel fell back after this provider failed.")
-    error_code: str | None = Field(default=None, description="Safe English error code, when this provider failed.")
+    confidence: ConfidenceClass = Field(
+        description="Provider confidence class for the requested capability."
+    )
+    health: ProviderHealth = Field(
+        description="Health snapshot used by this routing decision."
+    )
+    attempted: bool = Field(
+        default=False, description="Whether the kernel invoked this provider."
+    )
+    selected: bool = Field(
+        default=False, description="Whether this provider returned the selected result."
+    )
+    fallback: bool = Field(
+        default=False,
+        description="Whether the kernel fell back after this provider failed.",
+    )
+    error_code: str | None = Field(
+        default=None, description="Safe English error code, when this provider failed."
+    )
 
 
 class KernelTrace(BaseModel):
@@ -74,8 +91,12 @@ class KernelTrace(BaseModel):
         default_factory=list,
         description="Provider candidates in routing order, including skipped unhealthy candidates.",
     )
-    selected_provider: str | None = Field(default=None, description="Provider selected for the final result.")
-    fallback_count: int = Field(default=0, ge=0, description="Number of transient provider fallbacks.")
+    selected_provider: str | None = Field(
+        default=None, description="Provider selected for the final result."
+    )
+    fallback_count: int = Field(
+        default=0, ge=0, description="Number of transient provider fallbacks."
+    )
 
 
 class CodeIntelKernel:
@@ -91,10 +112,14 @@ class CodeIntelKernel:
         self._providers: list[object] = []
         self._symbol_index: SymbolIndexStore | None = symbol_index
         self._target_resolver: IndexBackedTargetResolver | None = (
-            IndexBackedTargetResolver(symbol_index, workspace_root) if symbol_index is not None else None
+            IndexBackedTargetResolver(symbol_index, workspace_root)
+            if symbol_index is not None
+            else None
         )
         self._context_extractor: IndexBackedCodeContext | None = (
-            IndexBackedCodeContext(symbol_index, workspace_root, resolver=self._target_resolver)
+            IndexBackedCodeContext(
+                symbol_index, workspace_root, resolver=self._target_resolver
+            )
             if symbol_index is not None and self._target_resolver is not None
             else None
         )
@@ -121,7 +146,10 @@ class CodeIntelKernel:
         """Resolve a CodeTarget through the index-backed resolver when configured."""
         with trace_span(
             "code_intel.provider.symbol_index.resolve_target",
-            {"provider_name": _INDEX_PROVIDER_NAME, **self._target_trace_metadata(target)},
+            {
+                "provider_name": _INDEX_PROVIDER_NAME,
+                **self._target_trace_metadata(target),
+            },
         ) as span:
             result = await self._resolve_target_untraced(target)
             span.add_metadata(self._result_trace_metadata(result))
@@ -131,7 +159,11 @@ class CodeIntelKernel:
         started_at = time.perf_counter()
         if self._target_resolver is None:
             if target.location is not None:
-                return ToolResult(ok=True, data=target.location, meta=ToolMeta(elapsed_ms=self._elapsed_ms(started_at)))
+                return ToolResult(
+                    ok=True,
+                    data=target.location,
+                    meta=ToolMeta(elapsed_ms=self._elapsed_ms(started_at)),
+                )
             return self._error_result(ProviderUnavailable(), started_at)
 
         try:
@@ -147,24 +179,36 @@ class CodeIntelKernel:
             flags=list(resolved.flags),
         )
 
-    async def call(self, capability: Capability | str, language: str, **kwargs: object) -> ToolResult[object]:
+    async def call(
+        self, capability: Capability | str, language: str, **kwargs: object
+    ) -> ToolResult[object]:
         """Route an async capability call to the index or best available provider."""
-        capability_label = capability.value if isinstance(capability, Capability) else str(capability)
+        capability_label = (
+            capability.value if isinstance(capability, Capability) else str(capability)
+        )
         with trace_span(
             "code_intel.kernel.dispatch",
-            {"capability": capability_label, "language": language, **self._call_path_trace_metadata(kwargs)},
+            {
+                "capability": capability_label,
+                "language": language,
+                **self._call_path_trace_metadata(kwargs),
+            },
         ) as span:
             result = await self._call_untraced(capability, language, **kwargs)
             span.add_metadata(self._dispatch_trace_metadata(result))
             return result
 
-    async def _call_untraced(self, capability: Capability | str, language: str, **kwargs: object) -> ToolResult[object]:
+    async def _call_untraced(
+        self, capability: Capability | str, language: str, **kwargs: object
+    ) -> ToolResult[object]:
         started_at = time.perf_counter()
         requested_capability = Capability(capability)
         trace = KernelTrace(capability=requested_capability, language=language)
         self.last_trace = trace
 
-        index_result = await self._call_index_capability(requested_capability, kwargs, started_at)
+        index_result = await self._call_index_capability(
+            requested_capability, kwargs, started_at
+        )
         if index_result is not None:
             return index_result
 
@@ -174,12 +218,18 @@ class CodeIntelKernel:
         for provider in self._providers:
             provider_name = self._provider_name(provider)
             try:
-                supported = await self._supports(provider, requested_capability, language)
+                supported = await self._supports(
+                    provider, requested_capability, language
+                )
             except CodeIntelError as error:
-                unavailable_records.append(self._failed_attempt(provider_name, error.code))
+                unavailable_records.append(
+                    self._failed_attempt(provider_name, error.code)
+                )
                 continue
             except Exception:
-                unavailable_records.append(self._failed_attempt(provider_name, CodeIntelError.code))
+                unavailable_records.append(
+                    self._failed_attempt(provider_name, CodeIntelError.code)
+                )
                 continue
 
             if not supported:
@@ -188,22 +238,34 @@ class CodeIntelKernel:
             try:
                 health = await self._health(provider)
             except CodeIntelError as error:
-                unavailable_records.append(self._failed_attempt(provider_name, error.code))
+                unavailable_records.append(
+                    self._failed_attempt(provider_name, error.code)
+                )
                 continue
             except Exception:
-                unavailable_records.append(self._failed_attempt(provider_name, CodeIntelError.code))
+                unavailable_records.append(
+                    self._failed_attempt(provider_name, CodeIntelError.code)
+                )
                 continue
 
             try:
-                confidence = await self._confidence_for(provider, requested_capability, language)
+                confidence = await self._confidence_for(
+                    provider, requested_capability, language
+                )
             except CodeIntelError as error:
-                unavailable_records.append(self._failed_attempt(provider_name, error.code, health))
+                unavailable_records.append(
+                    self._failed_attempt(provider_name, error.code, health)
+                )
                 continue
             except Exception:
-                unavailable_records.append(self._failed_attempt(provider_name, CodeIntelError.code, health))
+                unavailable_records.append(
+                    self._failed_attempt(provider_name, CodeIntelError.code, health)
+                )
                 continue
 
-            attempt = ProviderAttemptTrace(provider=provider_name, confidence=confidence, health=health)
+            attempt = ProviderAttemptTrace(
+                provider=provider_name, confidence=confidence, health=health
+            )
 
             if health.status == ProviderStatus.UNAVAILABLE:
                 attempt.error_code = ProviderUnavailable.code
@@ -219,12 +281,15 @@ class CodeIntelKernel:
             ),
             reverse=True,
         )
-        trace.attempts = [attempt for _provider, attempt in candidate_records] + unavailable_records
+        trace.attempts = [
+            attempt for _provider, attempt in candidate_records
+        ] + unavailable_records
 
         if not candidate_records:
             error = (
                 ProviderUnavailable()
-                if trace.attempts or requested_capability in _SEMANTIC_PLACEHOLDER_CAPABILITIES
+                if trace.attempts
+                or requested_capability in _SEMANTIC_PLACEHOLDER_CAPABILITIES
                 else LanguageNotSupported()
             )
             return self._error_result(error, started_at)
@@ -257,12 +322,15 @@ class CodeIntelKernel:
                 meta=provider_meta.model_copy(
                     update={
                         "elapsed_ms": self._elapsed_ms(started_at),
-                        "sources_used": provider_meta.sources_used or [attempt.provider],
+                        "sources_used": provider_meta.sources_used
+                        or [attempt.provider],
                     }
                 ),
             )
 
-        return self._error_result(last_fallback_error or ProviderUnavailable(), started_at)
+        return self._error_result(
+            last_fallback_error or ProviderUnavailable(), started_at
+        )
 
     async def _call_index_capability(
         self,
@@ -279,7 +347,11 @@ class CodeIntelKernel:
                 return None
             with trace_span(
                 "code_intel.provider.symbol_index.document_symbols",
-                {"provider_name": _INDEX_PROVIDER_NAME, "capability": capability.value, "path": path},
+                {
+                    "provider_name": _INDEX_PROVIDER_NAME,
+                    "capability": capability.value,
+                    "path": path,
+                },
             ) as span:
                 try:
                     await self._symbol_index.initialize()
@@ -296,18 +368,31 @@ class CodeIntelKernel:
                 span.add_metadata(self._result_trace_metadata(result))
                 return result
 
-        if capability == Capability.CONTEXT_EXTRACT and self._context_extractor is not None:
+        if (
+            capability == Capability.CONTEXT_EXTRACT
+            and self._context_extractor is not None
+        ):
             target = kwargs.get("target")
             include = self._coerce_context_parts(kwargs.get("include"))
             max_tokens = kwargs.get("max_tokens")
-            if not isinstance(target, CodeTarget) or include is None or not isinstance(max_tokens, int):
+            if (
+                not isinstance(target, CodeTarget)
+                or include is None
+                or not isinstance(max_tokens, int)
+            ):
                 return None
             with trace_span(
                 "code_intel.provider.symbol_index.context_extract",
-                {"provider_name": _INDEX_PROVIDER_NAME, "capability": capability.value, **self._target_trace_metadata(target)},
+                {
+                    "provider_name": _INDEX_PROVIDER_NAME,
+                    "capability": capability.value,
+                    **self._target_trace_metadata(target),
+                },
             ) as span:
                 try:
-                    context, flags = await self._context_extractor.extract_context(target, include, max_tokens)
+                    context, flags = await self._context_extractor.extract_context(
+                        target, include, max_tokens
+                    )
                 except CodeIntelError as error:
                     result = self._index_error_result(error, started_at)
                     span.add_metadata(self._result_trace_metadata(result))
@@ -329,12 +414,16 @@ class CodeIntelKernel:
 
     @staticmethod
     def _coerce_context_parts(value: object) -> set[ContextPart] | None:
-        if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Iterable):
+        if isinstance(value, (str, bytes, bytearray)) or not isinstance(
+            value, Iterable
+        ):
             return None
         parts: set[ContextPart] = set()
         for item in value:
             try:
-                parts.add(item if isinstance(item, ContextPart) else ContextPart(str(item)))
+                parts.add(
+                    item if isinstance(item, ContextPart) else ContextPart(str(item))
+                )
             except ValueError:
                 return None
         return parts
@@ -361,11 +450,15 @@ class CodeIntelKernel:
             ),
         )
 
-    def _index_error_result(self, error: CodeIntelError, started_at: float) -> ToolResult[object]:
+    def _index_error_result(
+        self, error: CodeIntelError, started_at: float
+    ) -> ToolResult[object]:
         self._mark_index_trace(selected=False, error_code=error.code)
         return self._error_result(error, started_at)
 
-    def _mark_index_trace(self, *, selected: bool, error_code: str | None = None) -> None:
+    def _mark_index_trace(
+        self, *, selected: bool, error_code: str | None = None
+    ) -> None:
         trace = self.last_trace
         if trace is None:
             return
@@ -390,7 +483,8 @@ class CodeIntelKernel:
         return ProviderAttemptTrace(
             provider=provider_name,
             confidence=ConfidenceClass.LOW,
-            health=health or ProviderHealth(status=ProviderStatus.UNAVAILABLE, health_score=0.0),
+            health=health
+            or ProviderHealth(status=ProviderStatus.UNAVAILABLE, health_score=0.0),
             error_code=error_code,
         )
 
@@ -404,7 +498,9 @@ class CodeIntelKernel:
         return cast(object | None, getattr(provider, attribute_name, None))
 
     @classmethod
-    def _callable_attribute(cls, provider: object, attribute_name: str) -> _DynamicMethod | None:
+    def _callable_attribute(
+        cls, provider: object, attribute_name: str
+    ) -> _DynamicMethod | None:
         attribute = cls._attribute(provider, attribute_name)
         if not callable(attribute):
             return None
@@ -416,7 +512,9 @@ class CodeIntelKernel:
             return await cast(Awaitable[object], value)
         return value
 
-    async def _supports(self, provider: object, capability: Capability, language: str) -> bool:
+    async def _supports(
+        self, provider: object, capability: Capability, language: str
+    ) -> bool:
         supports = self._callable_attribute(provider, "supports")
         if supports is None:
             return False
@@ -433,10 +531,14 @@ class CodeIntelKernel:
             return raw_health
         return ProviderHealth.model_validate(raw_health)
 
-    async def _confidence_for(self, provider: object, capability: Capability, language: str) -> ConfidenceClass:
+    async def _confidence_for(
+        self, provider: object, capability: Capability, language: str
+    ) -> ConfidenceClass:
         confidence_for = self._callable_attribute(provider, "confidence_for")
         if confidence_for is not None:
-            raw_confidence = await self._maybe_await(confidence_for(capability, language))
+            raw_confidence = await self._maybe_await(
+                confidence_for(capability, language)
+            )
             return self._coerce_confidence(raw_confidence, capability)
 
         for attribute_name in ("confidence_class", "confidence"):
@@ -445,13 +547,17 @@ class CodeIntelKernel:
                 continue
             callable_confidence = self._callable_attribute(provider, attribute_name)
             if callable_confidence is not None:
-                raw_confidence = await self._maybe_await(callable_confidence(capability, language))
+                raw_confidence = await self._maybe_await(
+                    callable_confidence(capability, language)
+                )
             return self._coerce_confidence(raw_confidence, capability)
 
         return ConfidenceClass.LOW
 
     @staticmethod
-    def _coerce_confidence(raw_confidence: object, capability: Capability) -> ConfidenceClass:
+    def _coerce_confidence(
+        raw_confidence: object, capability: Capability
+    ) -> ConfidenceClass:
         if isinstance(raw_confidence, Mapping):
             confidence_map = cast(Mapping[object, object], raw_confidence)
             raw_confidence = confidence_map.get(
@@ -462,7 +568,9 @@ class CodeIntelKernel:
             return raw_confidence
         return ConfidenceClass(str(raw_confidence))
 
-    async def _invoke(self, provider: object, capability: Capability, kwargs: dict[str, object]) -> object:
+    async def _invoke(
+        self, provider: object, capability: Capability, kwargs: dict[str, object]
+    ) -> object:
         method_name = _CAPABILITY_METHODS.get(capability)
         if method_name is None:
             raise ProviderUnavailable(f"capability {capability.value} has no route")
@@ -474,10 +582,19 @@ class CodeIntelKernel:
         provider_name = self._provider_name(provider)
         with trace_span(
             f"code_intel.provider.{provider_name}.{method_name}",
-            {"provider_name": provider_name, "capability": capability.value, **self._call_path_trace_metadata(kwargs)},
+            {
+                "provider_name": provider_name,
+                "capability": capability.value,
+                **self._call_path_trace_metadata(kwargs),
+            },
         ) as span:
             result = await self._maybe_await(method(**kwargs))
-            span.add_metadata({"result_count": result_count(result), "truncated": getattr(result, "truncated", False)})
+            span.add_metadata(
+                {
+                    "result_count": result_count(result),
+                    "truncated": getattr(result, "truncated", False),
+                }
+            )
             return result
 
     @staticmethod
@@ -501,7 +618,14 @@ class CodeIntelKernel:
             return metadata
         if trace.selected_provider is not None:
             metadata["provider_name"] = trace.selected_provider
-        fallback_chain = [attempt.provider for attempt in trace.attempts if attempt.attempted or attempt.fallback or attempt.selected or attempt.error_code]
+        fallback_chain = [
+            attempt.provider
+            for attempt in trace.attempts
+            if attempt.attempted
+            or attempt.fallback
+            or attempt.selected
+            or attempt.error_code
+        ]
         if fallback_chain:
             metadata["fallback_chain"] = fallback_chain
         return metadata
@@ -539,7 +663,9 @@ class CodeIntelKernel:
     def _elapsed_ms(started_at: float) -> int:
         return max(0, int((time.perf_counter() - started_at) * 1000))
 
-    def _error_result(self, error: CodeIntelError, started_at: float) -> ToolResult[object]:
+    def _error_result(
+        self, error: CodeIntelError, started_at: float
+    ) -> ToolResult[object]:
         return ToolResult(
             ok=False,
             error=error.to_tool_error(),

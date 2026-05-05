@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from .semantic import FakeSemanticProvider
-from .syntax import FakeSyntaxProvider, PYTHON_FAKE_PATH, TYPESCRIPT_FAKE_PATH, fake_symbols
+from .syntax import (
+    FakeSyntaxProvider,
+    PYTHON_FAKE_PATH,
+    TYPESCRIPT_FAKE_PATH,
+    fake_symbols,
+)
 
 
 def create_fake_providers() -> tuple[FakeSyntaxProvider, FakeSemanticProvider]:

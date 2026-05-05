@@ -1,15 +1,24 @@
 import asyncio
 import re
-
-from src.core.observability import get_tracer
+from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from src.core.state import AgentState
 from src.memory import ConversationContext, MessageRole, get_checkpointer
-from src.memory.session_store import _project_hash, delete as delete_session, list_sessions, load as load_session, save as save_session
+from src.memory.session_store import (
+    _project_hash,
+    delete as delete_session,
+    list_sessions,
+    load as load_session,
+    save as save_session,
+)
 from src.system_info import build_boot_prompt
 from src.workflow import build_graph
+
+if TYPE_CHECKING:
+    from src.code_intel.runtime import CodeIntelRuntime
 
 
 class QueryAgent:
@@ -19,7 +28,7 @@ class QueryAgent:
     conversation context threading, and the public `run` / `ainvoke` interface.
     """
 
-    def __init__(self, checkpointer: BaseCheckpointSaver | None = None):
+    def __init__(self, checkpointer: BaseCheckpointSaver[Any] | None = None):
         graph = build_graph()
         checkpointer = checkpointer or get_checkpointer()
         self._app = graph.compile(checkpointer=checkpointer)
@@ -28,6 +37,7 @@ class QueryAgent:
         self._session_boot_done: set[str] = set()
         self._auto_save_enabled: bool = True
         self._project_hash: str = _project_hash()
+        self.code_intel_runtime: "CodeIntelRuntime | None" = None
         self._load_all()
 
     def _load_all(self) -> None:
@@ -60,7 +70,7 @@ class QueryAgent:
             self._contexts[sid] = ConversationContext()
         return self._contexts[sid]
 
-    def _summarize_tools_from_subtasks(self, outputs: list) -> str:
+    def _summarize_tools_from_subtasks(self, outputs: Sequence[Any]) -> str:
         """Build a compact tool summary from SubTaskOutput objects or cached dicts."""
         seen: set[str] = set()
         parts: list[str] = []
@@ -73,16 +83,18 @@ class QueryAgent:
             parts.append(value)
 
         for output in outputs:
-            tool_log = getattr(output, "tool_log", "") or output.get("tool_log", "") if isinstance(output, dict) else ""
+            if isinstance(output, dict):
+                tool_log = output.get("tool_log", "") or ""
+                tools_used = output.get("tools_used", [])
+            else:
+                tool_log = getattr(output, "tool_log", "") or ""
+                tools_used = getattr(output, "tools_used", [])
+
             if tool_log:
-                extracted = self._extract_tool_summary(tool_log)
+                extracted = self._extract_tool_summary(str(tool_log))
                 for piece in extracted.split(","):
                     if piece.strip():
                         add(piece)
-
-            tools_used = getattr(output, "tools_used", None)
-            if tools_used is None and isinstance(output, dict):
-                tools_used = output.get("tools_used", [])
 
             for path in tools_used or []:
                 if not isinstance(path, str):
@@ -122,23 +134,24 @@ class QueryAgent:
         """Parse tool names and paths from a tool log section.
 
         The log contains tool results in the form:
-          [Tool: tool_name]\nresult
-          [Tool: read_file(path='/...')]\ncontent
-          [Tool: terminal(cmd='cat /...')]\noutput
+          [Tool: tool_name]
+result
+          [Tool: read_file(path='/...')]
+content
+          [Tool: terminal(cmd='cat /...')]
+output
 
         We extract unique (tool_name, path/cmd) pairs for the tool_summary field.
         """
         seen: set[str] = set()
         parts: list[str] = []
 
-        # Pattern: [Tool: name(args)]\n or [Tool: name]\n
         for match in re.finditer(r"\[Tool:\s*(\w+)(?:\([^)]*\))?\]", tool_log_text):
             key = match.group(1)
             if key not in seen:
                 seen.add(key)
                 parts.append(key)
 
-        # Also capture specific paths from read_file(path='...') and terminal(cmd='...')
         for match in re.finditer(r"read_file\s*\([^'\"]*['\"]([^'\"]+)['\"]", tool_log_text):
             path = match.group(1).strip()
             key = f"read_file: {path}"
@@ -170,6 +183,7 @@ class QueryAgent:
         if sid not in self._session_boot_done:
             self._session_boot_done.add(sid)
             from src.memory.context import Message
+
             ctx.messages.insert(
                 0,
                 Message(role=MessageRole.ASSISTANT, content=build_boot_prompt()),
@@ -195,27 +209,26 @@ class QueryAgent:
             "agent_history": [],
         }
         config = {"configurable": {"thread_id": sid}}
-        result = await self._app.ainvoke(initial_state, config=config)
+        result = cast(
+            AgentState, await self._app.ainvoke(initial_state, config=cast(Any, config))
+        )
 
         synthesis = result.get("synthesis_prompt", "")
         final_text = result.get("final_response") or synthesis
 
-        # Track sub-task outputs for token accounting (not stored in messages,
-        # but consumed by the synthesizer's final LLM call).
-        # Only keep summary-level info to avoid context bloat — full details
-        # are in the synthesis prompt which is ephemeral.
         outputs = result.get("sub_task_outputs", [])
         for o in outputs:
             o_dict = {
                 "id": o.id,
                 "name": o.name,
-                "detail": o.detail,  # now compressed: reasoning + tool chain only
+                "detail": o.detail,
                 "summary": o.summary,
                 "tools_used": o.tools_used,
                 "expert_mode": o.expert_mode,
+                "key_findings": getattr(o, "key_findings", []),
+                "tool_log": getattr(o, "tool_log", ""),
             }
             ctx.sub_task_outputs.append(o_dict)
-        # Cap accumulated sub-task outputs to the most recent 50
         if len(ctx.sub_task_outputs) > 50:
             ctx.sub_task_outputs = ctx.sub_task_outputs[-50:]
 
@@ -226,12 +239,12 @@ class QueryAgent:
             for output in reversed(result.get("outputs", [])):
                 if output.node == "direct_answer":
                     tool_log = output.result.get("tool_calls", "")
+                    if isinstance(tool_log, list):
+                        tool_log = "\n\n".join(str(item) for item in tool_log)
                     if tool_log:
-                        tool_summary = self._extract_tool_summary(tool_log)
+                        tool_summary = self._extract_tool_summary(str(tool_log))
                     break
         if final_text:
-            # Store compact content — the full synthesis prompt is ephemeral.
-            # to_summary() already prefers answer_content, so content is just a fallback.
             compact = final_text[:2000] if synthesis else final_text
             ctx.add_assistant_message(
                 content=compact,
@@ -242,7 +255,7 @@ class QueryAgent:
         if self._auto_save_enabled:
             save_session(ctx, sid, self._project_hash)
 
-        return result
+        return cast(AgentState, result)
 
     def store_streamed_answer(self, answer: str, thread_id: str | None = None) -> None:
         """Backfill the answer_content for the most recent assistant message."""

@@ -28,7 +28,10 @@ from .runtime import get_code_intel_kernel
 @code_intel_tool
 async def code_context(
     target: CodeTarget,
-    include: list[Literal["signature", "body", "parents", "imports", "nearby_symbols"]] | None = None,
+    include: (
+        list[Literal["signature", "body", "parents", "imports", "nearby_symbols"]]
+        | None
+    ) = None,
     max_tokens: int = 4000,
 ) -> str:
     """代码上下文：按目标 symbol 提取最小必要上下文，优先用于修改任务。
@@ -39,7 +42,9 @@ async def code_context(
         max_tokens: 上下文预算上限。
     """
     if max_tokens < 1:
-        return error_json("invalid_input", "max_tokens 必须大于 0。", "请提供正整数 token 预算。")
+        return error_json(
+            "invalid_input", "max_tokens 必须大于 0。", "请提供正整数 token 预算。"
+        )
 
     try:
         target_model = coerce_target(target)
@@ -74,5 +79,9 @@ async def code_context(
         truncated=context.truncated,
     )
     return serialize_result(
-        ToolResult[object](ok=True, data=data, meta=merge_meta(result.meta, truncated=context.truncated))
+        ToolResult[object](
+            ok=True,
+            data=data,
+            meta=merge_meta(result.meta, truncated=context.truncated),
+        )
     )

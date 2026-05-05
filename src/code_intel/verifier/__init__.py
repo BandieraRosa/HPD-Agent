@@ -21,7 +21,12 @@ from .diagnostics_delta import (
     stable_json_hash,
     workspace_hash_for_root,
 )
-from .repair_policy import RepairAction, RepairDecision, RepairPolicy, VerificationStatus
+from .repair_policy import (
+    RepairAction,
+    RepairDecision,
+    RepairPolicy,
+    VerificationStatus,
+)
 
 # Re-export as private name so the module still exposes _normalize_message
 # for callers who imported it before the public alias existed.
