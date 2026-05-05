@@ -6,11 +6,16 @@ import asyncio
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
 from src.agents import QueryAgent
-from src.code_intel.config import CodeIntelConfig, code_intel_index_db_path, load_code_intel_config
+from src.code_intel.config import (
+    CodeIntelConfig,
+    code_intel_index_db_path,
+    load_code_intel_config,
+)
 from src.code_intel.core import Symbol
 
 VALID_SUBS = ("status", "build", "clear")
@@ -73,7 +78,9 @@ async def _run_status(config: CodeIntelConfig) -> None:
     print(f"  文件数: {status.file_count}")
     print(f"  符号数: {status.symbol_count}")
     if status.last_indexed_at is not None:
-        print(f"  最近索引时间戳: {status.last_indexed_at:.3f}")
+        ts = status.last_indexed_at
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone()
+        print(f"  最近索引时间: {dt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print(f"  FTS: {'可用' if status.fts_available else '未启用或不可用'}")
 
 
@@ -90,7 +97,9 @@ async def _run_build(config: CodeIntelConfig) -> None:
 
         provider = TreeSitterProvider(workspace_root)
 
-        async def extract_symbols(workspace_root: Path, path: str, language: str) -> Sequence[Symbol]:
+        async def extract_symbols(
+            workspace_root: Path, path: str, language: str
+        ) -> Sequence[Symbol]:
             _ = workspace_root, language
             return await provider.outline(path)
 
@@ -104,10 +113,22 @@ async def _run_build(config: CodeIntelConfig) -> None:
         )
         result = await indexer.index_workspace()
         await indexer.store.close()
+    except ModuleNotFoundError as error:
+        print("代码索引构建失败。")
+        print(f"原因: 缺少模块 - {error.name}")
+        print(
+            f"提示: 请确认 {error.name} 已安装（pip install {error.name} 或 pip install -e .[code-intel-full]）"
+        )
+        return
+    except ImportError as error:
+        print("代码索引构建失败。")
+        print(f"原因: 导入失败 - {error}")
+        print("提示: 请确认所有依赖已安装，或稍后使用 /index status 查看已有索引。")
+        return
     except Exception as error:
         print("代码索引构建失败。")
-        print(f"原因: {error.__class__.__name__}")
-        print("提示: 请确认 tree-sitter-language-pack 可用，或稍后使用 /index status 查看已有索引。")
+        print(f"原因: {error.__class__.__name__} - {error}")
+        print("提示: 如果问题持续，请查看完整堆栈或使用 /index status 查看已有索引。")
         return
 
     print("代码索引构建完成:")
@@ -134,13 +155,19 @@ def _inspect_index_db(db_path: Path) -> _IndexStatus:
     if not db_path.exists():
         return _IndexStatus(exists=False, db_path=db_path)
     try:
-        connection = sqlite3.connect(db_path.resolve(strict=False).as_uri() + "?mode=ro", uri=True)
+        connection = sqlite3.connect(
+            db_path.resolve(strict=False).as_uri() + "?mode=ro", uri=True
+        )
     except sqlite3.Error as error:
-        return _IndexStatus(exists=True, db_path=db_path, error=error.__class__.__name__)
+        return _IndexStatus(
+            exists=True, db_path=db_path, error=error.__class__.__name__
+        )
     try:
         tables = _table_names(connection)
         if "files" not in tables or "symbols" not in tables:
-            return _IndexStatus(exists=True, db_path=db_path, error="索引 schema 不完整")
+            return _IndexStatus(
+                exists=True, db_path=db_path, error="索引 schema 不完整"
+            )
         file_count = _first_int(connection, "SELECT COUNT(*) FROM files")
         symbol_count = _first_int(connection, "SELECT COUNT(*) FROM symbols")
         last_indexed_at = _first_float(connection, "SELECT MAX(indexed_at) FROM files")
@@ -153,7 +180,9 @@ def _inspect_index_db(db_path: Path) -> _IndexStatus:
             fts_available="symbols_fts" in tables,
         )
     except sqlite3.Error as error:
-        return _IndexStatus(exists=True, db_path=db_path, error=error.__class__.__name__)
+        return _IndexStatus(
+            exists=True, db_path=db_path, error=error.__class__.__name__
+        )
     finally:
         connection.close()
 
@@ -161,7 +190,9 @@ def _inspect_index_db(db_path: Path) -> _IndexStatus:
 def _table_names(connection: sqlite3.Connection) -> set[str]:
     rows = cast(
         list[tuple[object, ...]],
-        connection.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')").fetchall(),
+        connection.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')"
+        ).fetchall(),
     )
     return {str(row[0]) for row in rows}
 
@@ -191,7 +222,11 @@ def _first_float(connection: sqlite3.Connection, sql: str) -> float | None:
 
 def _clear_index_files(db_path: Path) -> int:
     removed = 0
-    for candidate in (db_path, Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")):
+    for candidate in (
+        db_path,
+        Path(str(db_path) + "-wal"),
+        Path(str(db_path) + "-shm"),
+    ):
         try:
             if candidate.exists():
                 candidate.unlink()

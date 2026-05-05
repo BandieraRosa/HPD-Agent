@@ -7,7 +7,14 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
 
-from src.code_intel.core import Capability, Diagnostic, DiagnosticSeverity, Symbol, ToolMeta, ToolResult
+from src.code_intel.core import (
+    Capability,
+    Diagnostic,
+    DiagnosticSeverity,
+    Symbol,
+    ToolMeta,
+    ToolResult,
+)
 from src.code_intel.verifier import (
     PatchSummary,
     build_baseline_key,
@@ -88,7 +95,9 @@ def _provider_identity() -> tuple[str, str]:
                 "languages": _stable_strings(getattr(provider, "languages", ())),
             }
         )
-    provider_id = "+".join(str(record["name"]) for record in records) if records else "none"
+    provider_id = (
+        "+".join(str(record["name"]) for record in records) if records else "none"
+    )
     return provider_id, stable_json_hash(records)
 
 
@@ -103,13 +112,17 @@ def _stable_strings(values: object) -> list[str]:
 async def _symbols_for_path(path: str) -> list[Symbol]:
     language = language_for_path(path)
     kernel = get_code_intel_kernel()
-    outline = safe_cast_tool_result(await kernel.call(Capability.OUTLINE, language, path=path))
+    outline = safe_cast_tool_result(
+        await kernel.call(Capability.OUTLINE, language, path=path)
+    )
     if outline.ok:
         try:
             return symbol_sequence(outline.data)
         except (TypeError, ValueError):
             return []
-    document_symbols = safe_cast_tool_result(await kernel.call(Capability.DOCUMENT_SYMBOLS, language, path=path))
+    document_symbols = safe_cast_tool_result(
+        await kernel.call(Capability.DOCUMENT_SYMBOLS, language, path=path)
+    )
     if not document_symbols.ok:
         return []
     try:
@@ -125,8 +138,12 @@ async def _symbols_by_path(paths: list[str]) -> dict[str, list[Symbol]]:
     return symbols
 
 
-def _status_for_diagnostics(diagnostics: list[Diagnostic]) -> Literal["success", "partial", "blocked"]:
-    if any(diagnostic.severity == DiagnosticSeverity.ERROR for diagnostic in diagnostics):
+def _status_for_diagnostics(
+    diagnostics: list[Diagnostic],
+) -> Literal["success", "partial", "blocked"]:
+    if any(
+        diagnostic.severity == DiagnosticSeverity.ERROR for diagnostic in diagnostics
+    ):
         return "blocked"
     if diagnostics:
         return "partial"
@@ -137,7 +154,9 @@ def _action_for_status(status: str) -> Literal["proceed", "repair", "abort"]:
     return "repair" if status == "blocked" else "proceed"
 
 
-def _provider_partial_data(error_result: ToolResult[object], requested_checks: list[str], paths: list[str]) -> CodeVerifyData:
+def _provider_partial_data(
+    error_result: ToolResult[object], requested_checks: list[str], paths: list[str]
+) -> CodeVerifyData:
     skipped = _skipped_checks(requested_checks, paths, ran_lsp=False)
     skipped.append(
         ChecksSkipped(
@@ -178,13 +197,21 @@ async def code_verify(
     requested_checks = list(checks or ["lsp_diagnostics"])
     invalid_checks = [check for check in requested_checks if check not in _CHECKS]
     if invalid_checks:
-        return error_json("invalid_input", "不支持的 checks。", f"请移除这些检查项：{', '.join(invalid_checks)}。")
+        return error_json(
+            "invalid_input",
+            "不支持的 checks。",
+            f"请移除这些检查项：{', '.join(invalid_checks)}。",
+        )
     if scope not in {"changed", "file", "workspace"}:
-        return error_json("invalid_input", "不支持的 scope。", "请使用 changed、file 或 workspace。")
+        return error_json(
+            "invalid_input", "不支持的 scope。", "请使用 changed、file 或 workspace。"
+        )
 
     explicit_paths = list(paths or [])
     if any(not path.strip() for path in explicit_paths):
-        return error_json("invalid_input", "paths 不能包含空路径。", "请提供工作区相对路径。")
+        return error_json(
+            "invalid_input", "paths 不能包含空路径。", "请提供工作区相对路径。"
+        )
 
     diagnostics: list[Diagnostic] = []
     results: list[ToolResult[object]] = []
@@ -201,10 +228,17 @@ async def code_verify(
             )
             results.append(result)
             if not result.ok:
-                if result.error is not None and result.error.code == _PROVIDER_UNAVAILABLE:
+                if (
+                    result.error is not None
+                    and result.error.code == _PROVIDER_UNAVAILABLE
+                ):
                     meta = merge_meta(result.meta, sources_used=first_sources(*results))
-                    data = _provider_partial_data(result, requested_checks, explicit_paths)
-                    return serialize_result(ToolResult[object](ok=True, data=data, meta=meta))
+                    data = _provider_partial_data(
+                        result, requested_checks, explicit_paths
+                    )
+                    return serialize_result(
+                        ToolResult[object](ok=True, data=data, meta=meta)
+                    )
                 return kernel_error_json(result)
             try:
                 diagnostics.extend(diagnostic_sequence(result.data))
@@ -213,13 +247,19 @@ async def code_verify(
         ran_lsp = True
 
     checks_skipped = _skipped_checks(requested_checks, explicit_paths, ran_lsp)
-    meta = merge_meta(results[0].meta, sources_used=first_sources(*results)) if results else ToolMeta()
+    meta = (
+        merge_meta(results[0].meta, sources_used=first_sources(*results))
+        if results
+        else ToolMeta()
+    )
 
     if baseline:
         symbols_by_path = await _symbols_by_path(explicit_paths)
         provider_id, provider_config_hash = _provider_identity()
         # Compute content hash off the event loop to avoid blocking file IO
-        content_hash = await asyncio.to_thread(content_hash_for_paths, Path.cwd(), explicit_paths)
+        content_hash = await asyncio.to_thread(
+            content_hash_for_paths, Path.cwd(), explicit_paths
+        )
         key = build_baseline_key(
             workspace_root=Path.cwd(),
             relevant_paths=explicit_paths,
@@ -231,10 +271,18 @@ async def code_verify(
         cached = get_cached_baseline(key)
         baseline_refreshed = False
         if cached is None:
-            cached = refresh_agent_baseline(key=key, diagnostics=diagnostics, symbols_by_path=symbols_by_path)
+            cached = refresh_agent_baseline(
+                key=key, diagnostics=diagnostics, symbols_by_path=symbols_by_path
+            )
             baseline_refreshed = True
-        delta = compute_delta(cached, diagnostics, PatchSummary(), after_symbols_by_path=symbols_by_path)
-        status: Literal["success", "partial", "blocked"] = "blocked" if delta.has_new_errors else "partial" if delta.partial else "success"
+        delta = compute_delta(
+            cached, diagnostics, PatchSummary(), after_symbols_by_path=symbols_by_path
+        )
+        status: Literal["success", "partial", "blocked"] = (
+            "blocked"
+            if delta.has_new_errors
+            else "partial" if delta.partial else "success"
+        )
         data = CodeVerifyData(
             ok=not delta.has_new_errors,
             new_diagnostics=delta.new_diagnostics,

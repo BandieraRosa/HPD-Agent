@@ -67,7 +67,9 @@ def _text_match(query: str, source: str, location: Location) -> SearchMatch:
     )
 
 
-async def _search_symbols(query: str, kind: SymbolKind | None, limit: int) -> tuple[ToolResult[object], list[SearchMatch]]:
+async def _search_symbols(
+    query: str, kind: SymbolKind | None, limit: int
+) -> tuple[ToolResult[object], list[SearchMatch]]:
     result = safe_cast_tool_result(
         await get_code_intel_kernel().call(
             Capability.SYMBOL_SEARCH,
@@ -105,7 +107,10 @@ async def _search_text(
     if not result.ok:
         return result, []
     source = result.meta.sources_used[0] if result.meta.sources_used else "text_search"
-    return result, [_text_match(query, source, location) for location in location_sequence(result.data)]
+    return result, [
+        _text_match(query, source, location)
+        for location in location_sequence(result.data)
+    ]
 
 
 @code_intel_tool
@@ -128,11 +133,19 @@ async def code_search(
         case_sensitive: text/mixed 文本搜索是否区分大小写。
     """
     if not query.strip():
-        return error_json("invalid_input", "搜索关键词不能为空。", "请提供 symbol 名称或文本片段。")
+        return error_json(
+            "invalid_input", "搜索关键词不能为空。", "请提供 symbol 名称或文本片段。"
+        )
     if limit < 1:
-        return error_json("invalid_input", "limit 必须大于 0。", "请使用 1 到 100 之间的结果上限。")
+        return error_json(
+            "invalid_input", "limit 必须大于 0。", "请使用 1 到 100 之间的结果上限。"
+        )
     if kind not in _KIND_MAP:
-        return error_json("invalid_input", "不支持的 kind。", "请使用 function、class、method、interface 或 any。")
+        return error_json(
+            "invalid_input",
+            "不支持的 kind。",
+            "请使用 function、class、method、interface 或 any。",
+        )
 
     capped_limit = min(limit, 100)
     requested_kind = _KIND_MAP[kind]
@@ -142,7 +155,9 @@ async def code_search(
 
     try:
         if mode in {"symbol", "mixed"}:
-            symbol_result, symbol_matches = await _search_symbols(query, requested_kind, capped_limit + 1)
+            symbol_result, symbol_matches = await _search_symbols(
+                query, requested_kind, capped_limit + 1
+            )
             results.append(symbol_result)
             if not symbol_result.ok and mode == "symbol":
                 return kernel_error_json(symbol_result)
@@ -167,11 +182,17 @@ async def code_search(
 
     successful_results = [result for result in results if result.ok]
     if not successful_results:
-        return kernel_error_json(results[0]) if results else error_json("search_failed", "代码搜索未能执行。")
+        return (
+            kernel_error_json(results[0])
+            if results
+            else error_json("search_failed", "代码搜索未能执行。")
+        )
 
     meta = merge_meta(
         successful_results[0].meta,
         more_available=more_available,
         sources_used=first_sources(*successful_results),
     )
-    return serialize_result(ToolResult[object](ok=True, data=CodeSearchData(matches=matches), meta=meta))
+    return serialize_result(
+        ToolResult[object](ok=True, data=CodeSearchData(matches=matches), meta=meta)
+    )

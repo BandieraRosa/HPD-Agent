@@ -94,7 +94,9 @@ class CodeIntelConfig(BaseModel):
     cache_dir: str = Field(default_factory=lambda: str(default_code_intel_cache_dir()))
     index: CodeIntelIndexConfig = Field(default_factory=CodeIntelIndexConfig)
     lsp: CodeIntelLSPConfig = Field(default_factory=CodeIntelLSPConfig)
-    providers: CodeIntelProvidersConfig = Field(default_factory=CodeIntelProvidersConfig)
+    providers: CodeIntelProvidersConfig = Field(
+        default_factory=CodeIntelProvidersConfig
+    )
     verify: CodeIntelVerifyConfig = Field(default_factory=CodeIntelVerifyConfig)
     tools: CodeIntelToolsConfig = Field(default_factory=CodeIntelToolsConfig)
 
@@ -155,7 +157,9 @@ def code_intel_cache_dir(config: CodeIntelConfig) -> Path:
     return Path(config.cache_dir).expanduser()
 
 
-def code_intel_index_db_path(workspace_root: str | Path, config: CodeIntelConfig) -> Path:
+def code_intel_index_db_path(
+    workspace_root: str | Path, config: CodeIntelConfig
+) -> Path:
     """Return the per-workspace symbol DB path for a config."""
 
     resolved_workspace = Path(workspace_root).expanduser().resolve(strict=False)
@@ -163,10 +167,16 @@ def code_intel_index_db_path(workspace_root: str | Path, config: CodeIntelConfig
     return code_intel_cache_dir(config) / workspace_key / "symbols.db"
 
 
-def load_code_intel_config(config_path: str | Path | None = None) -> CodeIntelConfigLoadResult:
+def load_code_intel_config(
+    config_path: str | Path | None = None,
+) -> CodeIntelConfigLoadResult:
     """Load code_intel config, returning defaults on missing config and errors on malformed config."""
 
-    path = Path(config_path).expanduser() if config_path is not None else default_config_path()
+    path = (
+        Path(config_path).expanduser()
+        if config_path is not None
+        else default_config_path()
+    )
     defaults = CodeIntelConfig()
     if not path.exists():
         return CodeIntelConfigLoadResult(config=defaults)
@@ -219,8 +229,12 @@ def _config_error(path: Path, detail: str) -> CodeIntelConfigError:
 
 
 def _validation_summary(error: ValidationError) -> str:
-    first_error = error.errors(include_url=False, include_context=False, include_input=False)[0]
-    location = ".".join(str(part) for part in first_error.get("loc", ())) or "code_intel"
+    first_error = error.errors(
+        include_url=False, include_context=False, include_input=False
+    )[0]
+    location = (
+        ".".join(str(part) for part in first_error.get("loc", ())) or "code_intel"
+    )
     message = str(first_error.get("msg", "字段无效"))
     return f"{location}: {message}"
 

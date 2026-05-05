@@ -25,7 +25,9 @@ _SUPPORTED_LANGUAGES = {"python", "typescript"}
 
 
 def _range(start_line: int, start_col: int, end_line: int, end_col: int) -> Range:
-    return Range(start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col)
+    return Range(
+        start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col
+    )
 
 
 _BODY_BY_QUALIFIED_NAME = {
@@ -73,7 +75,9 @@ class FakeSemanticProvider:
             Capability.DIAGNOSTICS,
         }
         self.languages: set[str] = set(languages or _SUPPORTED_LANGUAGES)
-        self._health: ProviderHealth = health or ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
+        self._health: ProviderHealth = health or ProviderHealth(
+            status=ProviderStatus.HEALTHY, health_score=1.0
+        )
 
     async def supports(self, capability: Capability, language: str) -> bool:
         return capability in self.capabilities and language in self.languages
@@ -81,7 +85,9 @@ class FakeSemanticProvider:
     async def health(self) -> ProviderHealth:
         return self._health
 
-    async def confidence_for(self, _capability: Capability, _language: str) -> ConfidenceClass:
+    async def confidence_for(
+        self, _capability: Capability, _language: str
+    ) -> ConfidenceClass:
         return ConfidenceClass.HIGH
 
     async def extract_context(
@@ -95,16 +101,28 @@ class FakeSemanticProvider:
         return CodeContext(
             target_symbol=symbol,
             signature=symbol.signature if ContextPart.SIGNATURE in include else None,
-            body=_BODY_BY_QUALIFIED_NAME.get(qualified_name) if ContextPart.BODY in include else None,
+            body=(
+                _BODY_BY_QUALIFIED_NAME.get(qualified_name)
+                if ContextPart.BODY in include
+                else None
+            ),
             parents=self._parents_for(symbol) if ContextPart.PARENTS in include else [],
-            imports=list(_IMPORTS_BY_PATH.get(symbol.path, [])) if ContextPart.IMPORTS in include else [],
-            nearby_symbols=self._nearby_symbols(symbol) if ContextPart.NEARBY in include else [],
+            imports=(
+                list(_IMPORTS_BY_PATH.get(symbol.path, []))
+                if ContextPart.IMPORTS in include
+                else []
+            ),
+            nearby_symbols=(
+                self._nearby_symbols(symbol) if ContextPart.NEARBY in include else []
+            ),
             truncated=max_tokens < 64,
         )
 
     async def goto_definition(self, target: CodeTarget) -> list[Location]:
         symbol = self._resolve_symbol(target)
-        return [Location(path=symbol.path, range=symbol.selection_range or symbol.range)]
+        return [
+            Location(path=symbol.path, range=symbol.selection_range or symbol.range)
+        ]
 
     async def find_references(self, target: CodeTarget) -> list[Location]:
         symbol = self._resolve_symbol(target)
@@ -150,9 +168,14 @@ class FakeSemanticProvider:
             for symbol in symbols:
                 if symbol.path != target.anchor.path:
                     continue
-                if target.anchor.symbol_name is not None and symbol.name == target.anchor.symbol_name:
+                if (
+                    target.anchor.symbol_name is not None
+                    and symbol.name == target.anchor.symbol_name
+                ):
                     return symbol
-                if target.anchor.needle is not None and target.anchor.needle in (symbol.signature or symbol.name):
+                if target.anchor.needle is not None and target.anchor.needle in (
+                    symbol.signature or symbol.name
+                ):
                     return symbol
 
         if target.location is not None:
@@ -166,7 +189,11 @@ class FakeSemanticProvider:
     def _parents_for(symbol: Symbol) -> list[Symbol]:
         if symbol.parent_id is None:
             return []
-        return [candidate for candidate in fake_symbols() if candidate.id == symbol.parent_id]
+        return [
+            candidate
+            for candidate in fake_symbols()
+            if candidate.id == symbol.parent_id
+        ]
 
     @staticmethod
     def _nearby_symbols(symbol: Symbol) -> list[Symbol]:

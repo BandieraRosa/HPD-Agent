@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from .provider import InvalidSearchPath, InvalidSearchPattern, TextSearchLocations, TextSearchProvider
+from .provider import (
+    InvalidSearchPath,
+    InvalidSearchPattern,
+    TextSearchLocations,
+    TextSearchProvider,
+)
 
 __all__ = [
     "InvalidSearchPath",

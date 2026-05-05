@@ -71,7 +71,10 @@ class InvalidationDecision:
 
     @property
     def should_rebuild(self) -> bool:
-        return self.action in {InvalidationAction.REBUILD, InvalidationAction.REBUILD_ALL}
+        return self.action in {
+            InvalidationAction.REBUILD,
+            InvalidationAction.REBUILD_ALL,
+        }
 
 
 def decide_file_invalidation(
@@ -81,22 +84,38 @@ def decide_file_invalidation(
     """Compare stored and current metadata without trusting mtime for correctness."""
     if current is None or not current.exists:
         if previous is None:
-            return InvalidationDecision(InvalidationAction.REUSE, InvalidationReason.UNCHANGED)
-        return InvalidationDecision(InvalidationAction.DELETE, InvalidationReason.DELETED)
+            return InvalidationDecision(
+                InvalidationAction.REUSE, InvalidationReason.UNCHANGED
+            )
+        return InvalidationDecision(
+            InvalidationAction.DELETE, InvalidationReason.DELETED
+        )
 
     if previous is None:
-        return InvalidationDecision(InvalidationAction.REBUILD, InvalidationReason.NEW_FILE)
+        return InvalidationDecision(
+            InvalidationAction.REBUILD, InvalidationReason.NEW_FILE
+        )
 
     if previous.schema_version != current.schema_version:
-        return InvalidationDecision(InvalidationAction.REBUILD_ALL, InvalidationReason.SCHEMA_VERSION_CHANGED)
+        return InvalidationDecision(
+            InvalidationAction.REBUILD_ALL, InvalidationReason.SCHEMA_VERSION_CHANGED
+        )
     if previous.grammar_version != current.grammar_version:
-        return InvalidationDecision(InvalidationAction.REBUILD_ALL, InvalidationReason.GRAMMAR_VERSION_CHANGED)
+        return InvalidationDecision(
+            InvalidationAction.REBUILD_ALL, InvalidationReason.GRAMMAR_VERSION_CHANGED
+        )
     if previous.query_version != current.query_version:
-        return InvalidationDecision(InvalidationAction.REBUILD_ALL, InvalidationReason.QUERY_VERSION_CHANGED)
+        return InvalidationDecision(
+            InvalidationAction.REBUILD_ALL, InvalidationReason.QUERY_VERSION_CHANGED
+        )
     if previous.language != current.language:
-        return InvalidationDecision(InvalidationAction.REBUILD, InvalidationReason.LANGUAGE_CHANGED)
+        return InvalidationDecision(
+            InvalidationAction.REBUILD, InvalidationReason.LANGUAGE_CHANGED
+        )
     if previous.sha256 != current.sha256:
-        return InvalidationDecision(InvalidationAction.REBUILD, InvalidationReason.CONTENT_HASH_CHANGED)
+        return InvalidationDecision(
+            InvalidationAction.REBUILD, InvalidationReason.CONTENT_HASH_CHANGED
+        )
     return InvalidationDecision(InvalidationAction.REUSE, InvalidationReason.UNCHANGED)
 
 

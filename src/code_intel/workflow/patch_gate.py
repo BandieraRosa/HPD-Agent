@@ -32,7 +32,9 @@ from src.core.models import TaskOutput
 from src.core.state import AgentState
 
 _CHANGED_SCOPE: Literal["changed"] = "changed"
-_PATCH_SECTION_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete|Replace) File: (?P<path>.+)$", re.MULTILINE)
+_PATCH_SECTION_RE = re.compile(
+    r"^\*\*\* (?:Add|Update|Delete|Replace) File: (?P<path>.+)$", re.MULTILINE
+)
 _TOOL_ENTRY_RE = re.compile(
     r"\[Tool:\s*apply_patch\((?P<args>.*?)\)\]\n(?P<result>.*?)(?=\n\n\[Tool:|\Z)",
     re.DOTALL,
@@ -59,31 +61,68 @@ class KernelLike(Protocol):
     @property
     def providers(self) -> tuple[object, ...]: ...
 
-    async def call(self, capability: Capability | str, language: str, **kwargs: object) -> ToolResult[object]: ...
+    async def call(
+        self, capability: Capability | str, language: str, **kwargs: object
+    ) -> ToolResult[object]: ...
 
 
 class PatchGateConfig(BaseModel):
     """Runtime switches for workflow-side patch handling."""
 
-    workspace_root: Path = Field(default_factory=lambda: Path.cwd(), description="Workspace root for changed files.")
-    verify_changed: bool = Field(default=False, description="Run changed-file diagnostics through the workflow verifier.")
-    invalidate_syntax: bool = Field(default=False, description="Call a configured syntax invalidator for changed paths.")
-    invalidate_index: bool = Field(default=False, description="Call a configured index invalidator for changed paths.")
-    notify_lsp_did_change: bool = Field(default=False, description="Notify a configured, already-managed LSP adapter.")
-    max_repair_rounds: int = Field(default=2, ge=0, description="Maximum workflow repair rounds before retreat.")
-    block_on_warnings: bool = Field(default=False, description="Treat new warnings as blocking diagnostics.")
+    workspace_root: Path = Field(
+        default_factory=lambda: Path.cwd(),
+        description="Workspace root for changed files.",
+    )
+    verify_changed: bool = Field(
+        default=False,
+        description="Run changed-file diagnostics through the workflow verifier.",
+    )
+    invalidate_syntax: bool = Field(
+        default=False,
+        description="Call a configured syntax invalidator for changed paths.",
+    )
+    invalidate_index: bool = Field(
+        default=False,
+        description="Call a configured index invalidator for changed paths.",
+    )
+    notify_lsp_did_change: bool = Field(
+        default=False, description="Notify a configured, already-managed LSP adapter."
+    )
+    max_repair_rounds: int = Field(
+        default=2, ge=0, description="Maximum workflow repair rounds before retreat."
+    )
+    block_on_warnings: bool = Field(
+        default=False, description="Treat new warnings as blocking diagnostics."
+    )
 
 
 class PatchGateResult(BaseModel):
     """Structured workflow result after observing one apply_patch tool log."""
 
-    changed_files: list[str] = Field(default_factory=list, description="Workspace-relative files changed by apply_patch.")
-    invalidated_paths: list[str] = Field(default_factory=list, description="Paths passed to configured invalidators.")
-    notified_paths: list[str] = Field(default_factory=list, description="Paths sent to configured didChange notifier.")
-    verification: CodeVerifyData | None = Field(default=None, description="Changed-file verifier result, when enabled.")
-    repair_decision: RepairDecision | None = Field(default=None, description="Repair policy decision for the verifier delta.")
-    verify_scope: Literal["changed"] = Field(default=_CHANGED_SCOPE, description="PatchGate never auto-runs workspace verify.")
-    workspace_verify_started: bool = Field(default=False, description="Always false; guards against workspace-wide verification.")
+    changed_files: list[str] = Field(
+        default_factory=list,
+        description="Workspace-relative files changed by apply_patch.",
+    )
+    invalidated_paths: list[str] = Field(
+        default_factory=list, description="Paths passed to configured invalidators."
+    )
+    notified_paths: list[str] = Field(
+        default_factory=list, description="Paths sent to configured didChange notifier."
+    )
+    verification: CodeVerifyData | None = Field(
+        default=None, description="Changed-file verifier result, when enabled."
+    )
+    repair_decision: RepairDecision | None = Field(
+        default=None, description="Repair policy decision for the verifier delta."
+    )
+    verify_scope: Literal["changed"] = Field(
+        default=_CHANGED_SCOPE,
+        description="PatchGate never auto-runs workspace verify.",
+    )
+    workspace_verify_started: bool = Field(
+        default=False,
+        description="Always false; guards against workspace-wide verification.",
+    )
 
 
 class PatchGate:
@@ -135,7 +174,9 @@ class PatchGate:
         verification: CodeVerifyData | None = None
         decision: RepairDecision | None = None
         if self.config.verify_changed:
-            verification, decision = await self._verify_changed(paths, patch_summary or PatchSummary())
+            verification, decision = await self._verify_changed(
+                paths, patch_summary or PatchSummary()
+            )
 
         return PatchGateResult(
             changed_files=paths,
@@ -155,11 +196,17 @@ class PatchGate:
         max_rounds: int | None = None,
     ) -> AgentState | None:
         """Return a minimal reviewer-state update when the latest changed-file delta needs repair."""
-        if self._last_delta is None or not self._last_changed_files or self._last_verification is None:
+        if (
+            self._last_delta is None
+            or not self._last_changed_files
+            or self._last_verification is None
+        ):
             return None
 
         policy = RepairPolicy(
-            max_rounds=self.config.max_repair_rounds if max_rounds is None else max_rounds,
+            max_rounds=(
+                self.config.max_repair_rounds if max_rounds is None else max_rounds
+            ),
             block_on_warnings=self.config.block_on_warnings,
         )
         decision = policy.decide(self._last_delta, round=self._repair_round)
@@ -179,7 +226,9 @@ class PatchGate:
     ) -> tuple[CodeVerifyData, RepairDecision]:
         if not changed_files:
             delta = compute_delta([], [], patch_summary)
-            decision = RepairPolicy(max_rounds=self.config.max_repair_rounds).decide(delta, round=self._repair_round)
+            decision = RepairPolicy(max_rounds=self.config.max_repair_rounds).decide(
+                delta, round=self._repair_round
+            )
             data = _verify_data(
                 ok=True,
                 diagnostics=[],
@@ -194,7 +243,9 @@ class PatchGate:
         kernel = self._kernel_or_runtime()
         diagnostics: list[Diagnostic] = []
         for path in changed_files:
-            result = await kernel.call(Capability.DIAGNOSTICS, _language_for_path(path), path=path)
+            result = await kernel.call(
+                Capability.DIAGNOSTICS, _language_for_path(path), path=path
+            )
             if not result.ok:
                 error = result.error or ToolError(
                     code="provider_unavailable",
@@ -215,7 +266,9 @@ class PatchGate:
                 )
 
         provider_id, provider_config_hash = provider_identity_for_kernel(kernel)
-        content_hash = await asyncio.to_thread(content_hash_for_paths, self.config.workspace_root, changed_files)
+        content_hash = await asyncio.to_thread(
+            content_hash_for_paths, self.config.workspace_root, changed_files
+        )
         key = build_baseline_key(
             workspace_root=self.config.workspace_root,
             relevant_paths=changed_files,
@@ -226,7 +279,9 @@ class PatchGate:
         )
         cached = get_cached_baseline(key)
         baseline_refreshed = False
-        baseline: BaselineSnapshot | list[Diagnostic] = cached if cached is not None else []
+        baseline: BaselineSnapshot | list[Diagnostic] = (
+            cached if cached is not None else []
+        )
 
         delta = compute_delta(baseline, diagnostics, patch_summary)
         decision = RepairPolicy(
@@ -234,7 +289,8 @@ class PatchGate:
             block_on_warnings=self.config.block_on_warnings,
         ).decide(delta, round=self._repair_round)
         data = _verify_data(
-            ok=decision.action == RepairAction.PROCEED and decision.status != VerificationStatus.BLOCKED,
+            ok=decision.action == RepairAction.PROCEED
+            and decision.status != VerificationStatus.BLOCKED,
             diagnostics=diagnostics,
             delta=delta,
             decision=decision,
@@ -246,9 +302,13 @@ class PatchGate:
         self._remember(delta, changed_files, data)
         return data, decision
 
-    def _provider_partial(self, changed_files: list[str], error: ToolError) -> tuple[CodeVerifyData, RepairDecision]:
+    def _provider_partial(
+        self, changed_files: list[str], error: ToolError
+    ) -> tuple[CodeVerifyData, RepairDecision]:
         delta = DiagnosticsDelta.provider_partial(error)
-        decision = RepairPolicy(max_rounds=self.config.max_repair_rounds).decide(delta, round=self._repair_round)
+        decision = RepairPolicy(max_rounds=self.config.max_repair_rounds).decide(
+            delta, round=self._repair_round
+        )
         data = _verify_data(
             ok=False,
             diagnostics=[],
@@ -266,10 +326,14 @@ class PatchGate:
             return []
         notified: list[str] = []
         for path in paths:
-            content = await asyncio.to_thread(_read_workspace_text, self.config.workspace_root, path)
+            content = await asyncio.to_thread(
+                _read_workspace_text, self.config.workspace_root, path
+            )
             if content is None:
                 continue
-            if await _call_first(self._lsp_notifier, ("notify_did_change", "did_change"), path, content):
+            if await _call_first(
+                self._lsp_notifier, ("notify_did_change", "did_change"), path, content
+            ):
                 notified.append(path)
         return notified
 
@@ -280,7 +344,12 @@ class PatchGate:
 
         return get_code_intel_kernel()
 
-    def _remember(self, delta: DiagnosticsDelta, changed_files: list[str], verification: CodeVerifyData) -> None:
+    def _remember(
+        self,
+        delta: DiagnosticsDelta,
+        changed_files: list[str],
+        verification: CodeVerifyData,
+    ) -> None:
         self._last_delta = delta
         self._last_changed_files = list(changed_files)
         self._last_verification = verification
@@ -295,34 +364,50 @@ class PatchGate:
         current_round = _int_state_value(state, "review_round")
         outputs = _sequence_state_value(state, "outputs")
         re_execute_ids = _repair_task_ids(state)
-        feedback = build_repair_prompt(self._last_changed_files, self._last_verification, decision)
-        return cast(AgentState, cast(object, {
-            "review_decision": routed_decision,
-            "re_execute_task_ids": re_execute_ids if routed_decision == "re-execute" else [],
-            "review_feedback": feedback,
-            "review_round": current_round + 1,
-            "outputs": [
-                *outputs,
-                TaskOutput(
-                    node="reviewer",
-                    result={
-                        "decision": "repair" if routed_decision == "re-execute" else "proceed",
-                        "routed_as": routed_decision,
-                        "changed_files": list(self._last_changed_files),
-                        "repair_round": decision.repair_round,
-                        "max_rounds": decision.max_rounds,
-                        "verification_status": decision.status.value,
-                        "reason": decision.reason,
-                    },
-                ),
-            ],
-            "parent_span_id": parent_span_id,
-        }))
+        feedback = build_repair_prompt(
+            self._last_changed_files, self._last_verification, decision
+        )
+        return cast(
+            AgentState,
+            cast(
+                object,
+                {
+                    "review_decision": routed_decision,
+                    "re_execute_task_ids": (
+                        re_execute_ids if routed_decision == "re-execute" else []
+                    ),
+                    "review_feedback": feedback,
+                    "review_round": current_round + 1,
+                    "outputs": [
+                        *outputs,
+                        TaskOutput(
+                            node="reviewer",
+                            result={
+                                "decision": (
+                                    "repair"
+                                    if routed_decision == "re-execute"
+                                    else "proceed"
+                                ),
+                                "routed_as": routed_decision,
+                                "changed_files": list(self._last_changed_files),
+                                "repair_round": decision.repair_round,
+                                "max_rounds": decision.max_rounds,
+                                "verification_status": decision.status.value,
+                                "reason": decision.reason,
+                            },
+                        ),
+                    ],
+                    "parent_span_id": parent_span_id,
+                },
+            ),
+        )
 
 
 def changed_files_from_patch_text(patch_text: str) -> list[str]:
     """Extract workspace-relative paths from a v2 apply_patch document."""
-    return _unique_valid_paths(match.group("path").strip() for match in _PATCH_SECTION_RE.finditer(patch_text))
+    return _unique_valid_paths(
+        match.group("path").strip() for match in _PATCH_SECTION_RE.finditer(patch_text)
+    )
 
 
 def changed_files_from_tool_log(tool_log: str) -> list[str]:
@@ -333,7 +418,10 @@ def changed_files_from_tool_log(tool_log: str) -> list[str]:
         result = match.group("result")
         if "dry_run=True" in args or "[OK] Applied patch" not in result:
             continue
-        changed.extend(path_match.group("path").strip() for path_match in _APPLY_RESULT_PATH_RE.finditer(result))
+        changed.extend(
+            path_match.group("path").strip()
+            for path_match in _APPLY_RESULT_PATH_RE.finditer(result)
+        )
     return _unique_valid_paths(changed)
 
 
@@ -357,10 +445,13 @@ def build_repair_prompt(
         '修改后必须调用 code_verify(scope="changed") 验证 changed 范围。'
     )
 
+
 def provider_identity_for_kernel(kernel: object) -> tuple[str, str]:
     """Return the stable workflow verifier provider identity used by baseline keys."""
     providers_obj = getattr(kernel, "providers", ())
-    if isinstance(providers_obj, (str, bytes, bytearray)) or not isinstance(providers_obj, Iterable):
+    if isinstance(providers_obj, (str, bytes, bytearray)) or not isinstance(
+        providers_obj, Iterable
+    ):
         providers: Iterable[object] = ()
     else:
         providers = cast(Iterable[object], providers_obj)
@@ -375,7 +466,9 @@ def provider_identity_for_kernel(kernel: object) -> tuple[str, str]:
                 "languages": _stable_strings(getattr(provider, "languages", ())),
             }
         )
-    provider_id = "+".join(str(record["name"]) for record in records) if records else "none"
+    provider_id = (
+        "+".join(str(record["name"]) for record in records) if records else "none"
+    )
     return provider_id, stable_json_hash(records)
 
 
@@ -401,13 +494,17 @@ async def run_repair_round(
     max_rounds: int | None = None,
 ) -> AgentState | None:
     """Module-level reviewer repair hook."""
-    return await _default_gate.run_repair_round(state, parent_span_id=parent_span_id, max_rounds=max_rounds)
+    return await _default_gate.run_repair_round(
+        state, parent_span_id=parent_span_id, max_rounds=max_rounds
+    )
 
 
 async def _invalidate_paths(target: object | None, paths: list[str]) -> list[str]:
     if target is None or not paths:
         return []
-    if await _call_first(target, ("invalidate_paths", "mark_stale", "invalidate"), list(paths)):
+    if await _call_first(
+        target, ("invalidate_paths", "mark_stale", "invalidate"), list(paths)
+    ):
         return list(paths)
     method = getattr(target, "delete_file", None)
     if callable(method):
@@ -424,7 +521,9 @@ async def _invalidate_paths(target: object | None, paths: list[str]) -> list[str
     return []
 
 
-async def _call_first(target: object, method_names: Sequence[str], *args: object) -> bool:
+async def _call_first(
+    target: object, method_names: Sequence[str], *args: object
+) -> bool:
     for method_name in method_names:
         method = getattr(target, method_name, None)
         if not callable(method):
@@ -475,7 +574,11 @@ def _verify_data(
         recommended_next_action = "proceed"
     return CodeVerifyData(
         ok=ok,
-        new_diagnostics=delta.new_diagnostics if delta.new else diagnostics if decision.status == VerificationStatus.BLOCKED else [],
+        new_diagnostics=(
+            delta.new_diagnostics
+            if delta.new
+            else diagnostics if decision.status == VerificationStatus.BLOCKED else []
+        ),
         resolved_diagnostics=delta.resolved_diagnostics,
         unchanged_diagnostics=delta.unchanged_diagnostics,
         severity_delta=delta.severity_delta,
@@ -490,7 +593,9 @@ def _verify_data(
     )
 
 
-def _workflow_skips(changed_files: Sequence[str], provider_error: ToolError | None = None) -> list[ChecksSkipped]:
+def _workflow_skips(
+    changed_files: Sequence[str], provider_error: ToolError | None = None
+) -> list[ChecksSkipped]:
     skipped = [
         ChecksSkipped(
             check="workspace_verify",
@@ -506,7 +611,12 @@ def _workflow_skips(changed_files: Sequence[str], provider_error: ToolError | No
         ),
     ]
     if not changed_files:
-        skipped.append(ChecksSkipped(check="path_collection", reason="未从 apply_patch 日志中捕获 changed files。"))
+        skipped.append(
+            ChecksSkipped(
+                check="path_collection",
+                reason="未从 apply_patch 日志中捕获 changed files。",
+            )
+        )
     if provider_error is not None:
         skipped.append(
             ChecksSkipped(
@@ -520,7 +630,10 @@ def _workflow_skips(changed_files: Sequence[str], provider_error: ToolError | No
 def _diagnostic_sequence(data: object) -> list[Diagnostic]:
     if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):
         raise TypeError("kernel diagnostics data is not a sequence")
-    return [item if isinstance(item, Diagnostic) else Diagnostic.model_validate(item) for item in data]
+    return [
+        item if isinstance(item, Diagnostic) else Diagnostic.model_validate(item)
+        for item in data
+    ]
 
 
 def _diagnostic_lines(diagnostics: Sequence[Diagnostic]) -> str:
@@ -529,7 +642,9 @@ def _diagnostic_lines(diagnostics: Sequence[Diagnostic]) -> str:
     lines: list[str] = []
     for diagnostic in diagnostics[:8]:
         message = f"{diagnostic.code or diagnostic.source}: {diagnostic.message}"
-        lines.append(f"- {diagnostic.path}:{diagnostic.range.start_line + 1} [{diagnostic.severity.value}] {message}")
+        lines.append(
+            f"- {diagnostic.path}:{diagnostic.range.start_line + 1} [{diagnostic.severity.value}] {message}"
+        )
     if len(diagnostics) > 8:
         lines.append(f"- 另有 {len(diagnostics) - 8} 条诊断未展开。")
     return "\n".join(lines)

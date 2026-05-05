@@ -60,13 +60,17 @@ class InvalidSearchPath(CodeIntelError):
 
     code: ClassVar[str] = "invalid_search_path"
     message: ClassVar[str] = "搜索路径必须位于工作区内。"
-    hint: ClassVar[str | None] = "请使用不含绝对路径、反斜杠或 .. 片段的工作区相对路径。"
+    hint: ClassVar[str | None] = (
+        "请使用不含绝对路径、反斜杠或 .. 片段的工作区相对路径。"
+    )
 
 
 class TextSearchLocations(list[Location]):
     """Core Location results with optional ToolMeta for kernel propagation."""
 
-    def __init__(self, locations: Iterable[Location] = (), *, tool_meta: ToolMeta | None = None) -> None:
+    def __init__(
+        self, locations: Iterable[Location] = (), *, tool_meta: ToolMeta | None = None
+    ) -> None:
         super().__init__(locations)
         self.tool_meta: ToolMeta = tool_meta or ToolMeta()
 
@@ -87,14 +91,18 @@ class TextSearchProvider:
         self.name: str = name
         self.capabilities: set[Capability] = {Capability.TEXT_SEARCH}
         self.languages: set[str] = set(languages or _SUPPORTED_LANGUAGES)
-        self.workspace_root: Path = Path(workspace_root).expanduser().resolve(strict=False)
+        self.workspace_root: Path = (
+            Path(workspace_root).expanduser().resolve(strict=False)
+        )
         self.max_file_size_bytes: int = max(1, max_file_size_bytes)
         self.max_results: int = max(1, max_results)
         self._configured_health: ProviderHealth | None = health
         self._gitignore_spec: PathSpec[Pattern] = self._load_gitignore_spec()
 
     async def supports(self, capability: Capability, language: str) -> bool:
-        return capability in self.capabilities and (language in self.languages or "*" in self.languages)
+        return capability in self.capabilities and (
+            language in self.languages or "*" in self.languages
+        )
 
     async def health(self) -> ProviderHealth:
         if self._configured_health is not None:
@@ -107,7 +115,9 @@ class TextSearchProvider:
             )
         return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
 
-    async def confidence_for(self, capability: Capability, _language: str) -> ConfidenceClass:
+    async def confidence_for(
+        self, capability: Capability, _language: str
+    ) -> ConfidenceClass:
         if capability == Capability.TEXT_SEARCH:
             return ConfidenceClass.HIGH
         return ConfidenceClass.LOW
@@ -146,7 +156,9 @@ class TextSearchProvider:
         if query == "":
             return TextSearchLocations()
 
-        pattern = self._compile_pattern(query, regex=regex, case_sensitive=case_sensitive)
+        pattern = self._compile_pattern(
+            query, regex=regex, case_sensitive=case_sensitive
+        )
         result_limit = self._requested_limit(limit, max_results)
         if result_limit <= 0:
             return TextSearchLocations()
@@ -172,7 +184,10 @@ class TextSearchProvider:
     def _load_gitignore_spec(self) -> PathSpec[Pattern]:
         gitignore = self.workspace_root / ".gitignore"
         try:
-            if not gitignore.is_file() or gitignore.stat().st_size > _MAX_GITIGNORE_SIZE_BYTES:
+            if (
+                not gitignore.is_file()
+                or gitignore.stat().st_size > _MAX_GITIGNORE_SIZE_BYTES
+            ):
                 return PathSpec.from_lines("gitignore", [])
             lines = gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -180,7 +195,9 @@ class TextSearchProvider:
         return PathSpec.from_lines("gitignore", lines)
 
     @staticmethod
-    def _compile_pattern(query: str, *, regex: bool, case_sensitive: bool) -> re.Pattern[str]:
+    def _compile_pattern(
+        query: str, *, regex: bool, case_sensitive: bool
+    ) -> re.Pattern[str]:
         flags = 0 if case_sensitive else re.IGNORECASE
         source = query if regex else re.escape(query)
         try:
@@ -221,7 +238,9 @@ class TextSearchProvider:
                 if child.is_dir():
                     if not self._is_ignored(relative_path, is_dir=True):
                         directories.append(child)
-                elif child.is_file() and not self._is_ignored(relative_path, is_dir=False):
+                elif child.is_file() and not self._is_ignored(
+                    relative_path, is_dir=False
+                ):
                     yield child
             stack.extend(reversed(directories))
 
@@ -233,7 +252,9 @@ class TextSearchProvider:
         if not self._is_inside_workspace(target) or target.is_symlink():
             return None
         relative_target = self._relative_path(target)
-        if relative_target is not None and self._is_ignored(relative_target, is_dir=target.is_dir()):
+        if relative_target is not None and self._is_ignored(
+            relative_target, is_dir=target.is_dir()
+        ):
             return None
         return target
 
@@ -273,10 +294,14 @@ class TextSearchProvider:
         return is_dir and self._gitignore_spec.match_file(f"{relative_path}/")
 
     def _is_searchable_file(self, path: Path) -> bool:
-        if path.is_symlink() or not self._is_inside_workspace(path.resolve(strict=False)):
+        if path.is_symlink() or not self._is_inside_workspace(
+            path.resolve(strict=False)
+        ):
             return False
         relative_path = self._relative_path(path)
-        return relative_path is not None and not self._is_ignored(relative_path, is_dir=False)
+        return relative_path is not None and not self._is_ignored(
+            relative_path, is_dir=False
+        )
 
     def _read_text_file(self, path: Path) -> tuple[str | None, bool]:
         try:
@@ -288,10 +313,14 @@ class TextSearchProvider:
 
         try:
             with path.open("rb") as handle:
-                first_chunk = handle.read(min(_BINARY_CHUNK_SIZE, self.max_file_size_bytes))
+                first_chunk = handle.read(
+                    min(_BINARY_CHUNK_SIZE, self.max_file_size_bytes)
+                )
                 if b"\0" in first_chunk:
                     return None, False
-                remainder = handle.read(max(0, self.max_file_size_bytes - len(first_chunk)) + 1)
+                remainder = handle.read(
+                    max(0, self.max_file_size_bytes - len(first_chunk)) + 1
+                )
         except OSError:
             return None, False
 
@@ -300,7 +329,9 @@ class TextSearchProvider:
             return None, True
         return raw.decode("utf-8", errors="replace"), False
 
-    def _location_for_span(self, path: Path, text: str, span: tuple[int, int]) -> Location:
+    def _location_for_span(
+        self, path: Path, text: str, span: tuple[int, int]
+    ) -> Location:
         start_offset, end_offset = span
         line_starts = self._line_starts(text)
         start_line, start_col = self._line_col_for_offset(line_starts, start_offset)
@@ -310,7 +341,12 @@ class TextSearchProvider:
             raise InvalidSearchPath("matched path escaped workspace")
         return Location(
             path=relative_path,
-            range=Range(start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col),
+            range=Range(
+                start_line=start_line,
+                start_col=start_col,
+                end_line=end_line,
+                end_col=end_col,
+            ),
         )
 
     @staticmethod

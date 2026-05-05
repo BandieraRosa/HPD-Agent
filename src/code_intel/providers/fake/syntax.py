@@ -21,7 +21,9 @@ _SUPPORTED_LANGUAGES = {"python", "typescript"}
 
 
 def _range(start_line: int, start_col: int, end_line: int, end_col: int) -> Range:
-    return Range(start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col)
+    return Range(
+        start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col
+    )
 
 
 def _symbol(
@@ -112,7 +114,10 @@ def fake_symbols() -> list[Symbol]:
 
 _TEXT_MATCHES = [
     ("FakeService", Location(path=PYTHON_FAKE_PATH, range=_range(2, 6, 2, 17))),
-    ("return fake response", Location(path=PYTHON_FAKE_PATH, range=_range(8, 8, 8, 33))),
+    (
+        "return fake response",
+        Location(path=PYTHON_FAKE_PATH, range=_range(8, 8, 8, 33)),
+    ),
     ("helper", Location(path=PYTHON_FAKE_PATH, range=_range(16, 4, 16, 10))),
     ("fakeClient", Location(path=TYPESCRIPT_FAKE_PATH, range=_range(3, 16, 3, 26))),
 ]
@@ -136,7 +141,9 @@ class FakeSyntaxProvider:
             Capability.TEXT_SEARCH,
         }
         self.languages: set[str] = set(languages or _SUPPORTED_LANGUAGES)
-        self._health: ProviderHealth = health or ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
+        self._health: ProviderHealth = health or ProviderHealth(
+            status=ProviderStatus.HEALTHY, health_score=1.0
+        )
 
     async def supports(self, capability: Capability, language: str) -> bool:
         return capability in self.capabilities and language in self.languages
@@ -144,7 +151,9 @@ class FakeSyntaxProvider:
     async def health(self) -> ProviderHealth:
         return self._health
 
-    async def confidence_for(self, capability: Capability, _language: str) -> ConfidenceClass:
+    async def confidence_for(
+        self, capability: Capability, _language: str
+    ) -> ConfidenceClass:
         if capability == Capability.TEXT_SEARCH:
             return ConfidenceClass.LOW
         return ConfidenceClass.MEDIUM
@@ -173,14 +182,22 @@ class FakeSyntaxProvider:
         ]
         return matches[:limit]
 
-    async def text_search(self, query: str, path: str | None = None, limit: int = 20) -> list[Location]:
+    async def text_search(
+        self, query: str, path: str | None = None, limit: int = 20
+    ) -> list[Location]:
         normalized_query = query.casefold()
         matches = [
             location
             for text, location in _TEXT_MATCHES
-            if normalized_query in text.casefold() and (path is None or location.path == path)
+            if normalized_query in text.casefold()
+            and (path is None or location.path == path)
         ]
         return matches[:limit]
 
 
-__all__ = ["FakeSyntaxProvider", "PYTHON_FAKE_PATH", "TYPESCRIPT_FAKE_PATH", "fake_symbols"]
+__all__ = [
+    "FakeSyntaxProvider",
+    "PYTHON_FAKE_PATH",
+    "TYPESCRIPT_FAKE_PATH",
+    "fake_symbols",
+]

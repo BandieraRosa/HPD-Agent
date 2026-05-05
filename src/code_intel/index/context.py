@@ -5,7 +5,14 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from src.code_intel.core import CodeContext, CodeTarget, ContextPart, Symbol, SymbolKind, SymbolNotFound
+from src.code_intel.core import (
+    CodeContext,
+    CodeTarget,
+    ContextPart,
+    Symbol,
+    SymbolKind,
+    SymbolNotFound,
+)
 from src.code_intel.core.models import validate_workspace_relative_path
 
 from .resolver import IndexBackedTargetResolver, text_for_range
@@ -34,8 +41,12 @@ class IndexBackedCodeContext:
         resolver: IndexBackedTargetResolver | None = None,
     ) -> None:
         self.store: SymbolIndexStore = store
-        self.workspace_root: Path = Path(workspace_root).expanduser().resolve(strict=False)
-        self.resolver: IndexBackedTargetResolver = resolver or IndexBackedTargetResolver(store, workspace_root)
+        self.workspace_root: Path = (
+            Path(workspace_root).expanduser().resolve(strict=False)
+        )
+        self.resolver: IndexBackedTargetResolver = (
+            resolver or IndexBackedTargetResolver(store, workspace_root)
+        )
 
     async def extract_context(
         self,
@@ -55,10 +66,26 @@ class IndexBackedCodeContext:
         context = CodeContext(
             target_symbol=symbol,
             signature=symbol.signature if ContextPart.SIGNATURE in include else None,
-            body=text_for_range(source, symbol.range) if source is not None and ContextPart.BODY in include else None,
-            parents=_parents_for(symbol, symbols_by_id) if ContextPart.PARENTS in include else [],
-            imports=_imports_from_source(source) if source is not None and ContextPart.IMPORTS in include else [],
-            nearby_symbols=_nearby_symbols(symbol, symbols) if ContextPart.NEARBY in include else [],
+            body=(
+                text_for_range(source, symbol.range)
+                if source is not None and ContextPart.BODY in include
+                else None
+            ),
+            parents=(
+                _parents_for(symbol, symbols_by_id)
+                if ContextPart.PARENTS in include
+                else []
+            ),
+            imports=(
+                _imports_from_source(source)
+                if source is not None and ContextPart.IMPORTS in include
+                else []
+            ),
+            nearby_symbols=(
+                _nearby_symbols(symbol, symbols)
+                if ContextPart.NEARBY in include
+                else []
+            ),
             truncated=False,
         )
         return _apply_budget(context, max_tokens), resolved.flags
@@ -134,12 +161,16 @@ def _apply_budget(context: CodeContext, max_tokens: int) -> CodeContext:
     while _context_tokens(current) > budget:
         truncated = True
         if current.nearby_symbols:
-            current = current.model_copy(update={"nearby_symbols": current.nearby_symbols[:-1]})
+            current = current.model_copy(
+                update={"nearby_symbols": current.nearby_symbols[:-1]}
+            )
             continue
         if current.body:
             excess_tokens = max(1, _context_tokens(current) - budget)
             new_length = max(0, len(current.body) - (excess_tokens * 4))
-            current = current.model_copy(update={"body": current.body[:new_length].rstrip()})
+            current = current.model_copy(
+                update={"body": current.body[:new_length].rstrip()}
+            )
             continue
         if current.imports:
             current = current.model_copy(update={"imports": current.imports[:-1]})
@@ -149,7 +180,9 @@ def _apply_budget(context: CodeContext, max_tokens: int) -> CodeContext:
             continue
         if current.signature:
             allowed = max(0, budget * 4)
-            current = current.model_copy(update={"signature": current.signature[:allowed].rstrip()})
+            current = current.model_copy(
+                update={"signature": current.signature[:allowed].rstrip()}
+            )
             continue
         break
     if truncated:

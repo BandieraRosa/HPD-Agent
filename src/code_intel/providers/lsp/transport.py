@@ -29,7 +29,9 @@ class NotificationHandler(Protocol):
 
 
 def encode_lsp_message(payload: Mapping[str, object]) -> bytes:
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
     header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
     return header + body
 
@@ -70,7 +72,9 @@ class LSPTransport:
         stderr_lines: int = _DEFAULT_STDERR_LINES,
     ) -> None:
         self._command: tuple[str, ...] = tuple(command)
-        self._cwd: Path | None = Path(cwd).expanduser().resolve(strict=False) if cwd is not None else None
+        self._cwd: Path | None = (
+            Path(cwd).expanduser().resolve(strict=False) if cwd is not None else None
+        )
         self._env: dict[str, str] | None = dict(env) if env is not None else None
         self._default_timeout: float = default_timeout
         self._stderr_lines: deque[str] = deque(maxlen=max(1, stderr_lines))
@@ -115,19 +119,31 @@ class LSPTransport:
             except OSError as error:
                 raise ProviderUnavailable("failed to launch language server") from error
 
-            if process.stdin is None or process.stdout is None or process.stderr is None:
+            if (
+                process.stdin is None
+                or process.stdout is None
+                or process.stderr is None
+            ):
                 raise ProviderUnavailable("language server stdio pipes are unavailable")
 
             self._process = process
-            self._stdout_task = asyncio.create_task(self._read_stdout_loop(process.stdout))
-            self._stderr_task = asyncio.create_task(self._read_stderr_loop(process.stderr))
+            self._stdout_task = asyncio.create_task(
+                self._read_stdout_loop(process.stdout)
+            )
+            self._stderr_task = asyncio.create_task(
+                self._read_stderr_loop(process.stderr)
+            )
             self._wait_task = asyncio.create_task(self._wait_process_loop(process))
 
-    async def add_notification_handler(self, method: str, handler: NotificationHandler) -> None:
+    async def add_notification_handler(
+        self, method: str, handler: NotificationHandler
+    ) -> None:
         """Register an async notification handler for a method."""
         self._notification_handlers.setdefault(method, []).append(handler)
 
-    async def request(self, method: str, params: object | None = None, *, timeout: float | None = None) -> object | None:
+    async def request(
+        self, method: str, params: object | None = None, *, timeout: float | None = None
+    ) -> object | None:
         """Send a JSON-RPC request and await its response."""
         await self.start()
         self._ensure_available()
@@ -137,14 +153,20 @@ class LSPTransport:
         future: asyncio.Future[object | None] = loop.create_future()
         self._pending[request_id] = future
 
-        payload: Payload = {"jsonrpc": _JSONRPC_VERSION, "id": request_id, "method": method}
+        payload: Payload = {
+            "jsonrpc": _JSONRPC_VERSION,
+            "id": request_id,
+            "method": method,
+        }
         if params is not None:
             payload["params"] = params
 
         try:
             await self._write_payload(payload)
             request_timeout = self._default_timeout if timeout is None else timeout
-            return await asyncio.wait_for(asyncio.shield(future), timeout=request_timeout)
+            return await asyncio.wait_for(
+                asyncio.shield(future), timeout=request_timeout
+            )
         except asyncio.TimeoutError:
             pending = self._pending.pop(request_id, None)
             if pending is not None and not pending.done():
@@ -217,7 +239,11 @@ class LSPTransport:
         except Exception:
             self._mark_unavailable("invalid language server output")
         finally:
-            if not self._closing and self._process is not None and self._process.returncode is not None:
+            if (
+                not self._closing
+                and self._process is not None
+                and self._process.returncode is not None
+            ):
                 self._mark_unavailable("language server exited unexpectedly")
 
     async def _read_stderr_loop(self, reader: asyncio.StreamReader) -> None:
@@ -278,7 +304,9 @@ class LSPTransport:
         if future is None or future.done():
             return
         if "error" in message:
-            future.set_exception(ProviderUnavailable("language server returned an error"))
+            future.set_exception(
+                ProviderUnavailable("language server returned an error")
+            )
             return
         future.set_result(message.get("result"))
 

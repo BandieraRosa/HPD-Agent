@@ -51,11 +51,15 @@ def _limited_locations(
             continue
         grouped.setdefault(location.path, []).append(location)
     visible_paths = set(grouped)
-    visible_locations = [location for location in visible_locations if location.path in visible_paths]
+    visible_locations = [
+        location for location in visible_locations if location.path in visible_paths
+    ]
     return visible_locations, grouped, more_available
 
 
-def _limited_symbols(symbols: list[Symbol], max_results: int) -> tuple[list[Symbol], bool]:
+def _limited_symbols(
+    symbols: list[Symbol], max_results: int
+) -> tuple[list[Symbol], bool]:
     limited = symbols[: max_results + 1]
     return limited[:max_results], len(limited) > max_results
 
@@ -76,12 +80,20 @@ async def code_semantic(
         max_files: references 分组时最多返回多少个文件。
     """
     if max_results < 1:
-        return error_json("invalid_input", "max_results 必须大于 0。", "请提供正整数结果上限。")
+        return error_json(
+            "invalid_input", "max_results 必须大于 0。", "请提供正整数结果上限。"
+        )
     if max_files < 1:
-        return error_json("invalid_input", "max_files 必须大于 0。", "请提供正整数文件上限。")
+        return error_json(
+            "invalid_input", "max_files 必须大于 0。", "请提供正整数文件上限。"
+        )
     capability = _OPERATION_CAPABILITY.get(operation)
     if capability is None:
-        return error_json("invalid_input", "不支持的 operation。", "请使用 definition、references、hover 或 document_symbols。")
+        return error_json(
+            "invalid_input",
+            "不支持的 operation。",
+            "请使用 definition、references、hover 或 document_symbols。",
+        )
 
     try:
         target_model = coerce_target(target)
@@ -97,20 +109,30 @@ async def code_semantic(
                 return kernel_error_json(resolved)
             resolved_locations = location_sequence([resolved.data])
             path = resolved_locations[0].path
-        result = safe_cast_tool_result(await kernel.call(capability, language_for_path(path), path=path))
+        result = safe_cast_tool_result(
+            await kernel.call(capability, language_for_path(path), path=path)
+        )
     else:
         result = safe_cast_tool_result(
-            await kernel.call(capability, language_for_target(target_model), target=target_model)
+            await kernel.call(
+                capability, language_for_target(target_model), target=target_model
+            )
         )
     if not result.ok:
         return kernel_error_json(result)
 
     try:
         if operation == "hover":
-            data = CodeSemanticData(operation=operation, hover=hover_model(result.data), more_available=False)
+            data = CodeSemanticData(
+                operation=operation,
+                hover=hover_model(result.data),
+                more_available=False,
+            )
             meta = merge_meta(result.meta)
         elif operation == "document_symbols":
-            symbols, more_available = _limited_symbols(symbol_sequence(result.data), max_results)
+            symbols, more_available = _limited_symbols(
+                symbol_sequence(result.data), max_results
+            )
             data = CodeSemanticData(
                 operation=operation,
                 document_symbols=symbols,

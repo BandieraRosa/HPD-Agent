@@ -7,7 +7,14 @@ import bisect
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.code_intel.core import CodeTarget, Location, Range, Symbol, SymbolNotFound, TextAnchor
+from src.code_intel.core import (
+    CodeTarget,
+    Location,
+    Range,
+    Symbol,
+    SymbolNotFound,
+    TextAnchor,
+)
 from src.code_intel.core.models import validate_workspace_relative_path
 
 from .store import SymbolIndexStore
@@ -35,9 +42,13 @@ class _NeedleMatch:
 class IndexBackedTargetResolver:
     """Resolve CodeTarget values using the current symbol index and source text anchors."""
 
-    def __init__(self, store: SymbolIndexStore, workspace_root: str | Path = ".") -> None:
+    def __init__(
+        self, store: SymbolIndexStore, workspace_root: str | Path = "."
+    ) -> None:
         self.store: SymbolIndexStore = store
-        self.workspace_root: Path = Path(workspace_root).expanduser().resolve(strict=False)
+        self.workspace_root: Path = (
+            Path(workspace_root).expanduser().resolve(strict=False)
+        )
 
     async def resolve(self, target: CodeTarget) -> Location | None:
         """Return only the resolved Location for TargetResolver-compatible callers."""
@@ -165,11 +176,14 @@ def _anchor_name_candidates(anchor: TextAnchor, symbols: list[Symbol]) -> list[S
     return [
         symbol
         for symbol in symbols
-        if symbol.name == anchor.symbol_name or symbol.qualified_name == anchor.symbol_name
+        if symbol.name == anchor.symbol_name
+        or symbol.qualified_name == anchor.symbol_name
     ]
 
 
-def _resolve_symbol_anchor(anchor: TextAnchor, candidates: list[Symbol]) -> ResolvedTarget | None:
+def _resolve_symbol_anchor(
+    anchor: TextAnchor, candidates: list[Symbol]
+) -> ResolvedTarget | None:
     if anchor.symbol_name is None:
         return None
     if not candidates:
@@ -207,10 +221,15 @@ def _needle_matches(content: str, anchor: TextAnchor) -> list[_NeedleMatch]:
     return matches
 
 
-def _surrounding_matches(content: str, start: int, end: int, anchor: TextAnchor) -> bool:
+def _surrounding_matches(
+    content: str, start: int, end: int, anchor: TextAnchor
+) -> bool:
     before = content[max(0, start - _ANCHOR_CONTEXT_CHARS) : start]
     after = content[end : min(len(content), end + _ANCHOR_CONTEXT_CHARS)]
-    if anchor.surrounding_before is not None and anchor.surrounding_before not in before:
+    if (
+        anchor.surrounding_before is not None
+        and anchor.surrounding_before not in before
+    ):
         return False
     if anchor.surrounding_after is not None and anchor.surrounding_after not in after:
         return False
@@ -227,22 +246,29 @@ def _matches_inside_symbols(
     return [
         match
         for match in matches
-        if _innermost_symbol_containing_range(symbols, range_from_offsets(content, match.start, match.end)) is not None
+        if _innermost_symbol_containing_range(
+            symbols, range_from_offsets(content, match.start, match.end)
+        )
+        is not None
     ]
 
 
-def _innermost_symbol_containing_range(symbols: list[Symbol], target_range: Range) -> Symbol | None:
-    candidates = [symbol for symbol in symbols if range_contains(symbol.range, target_range)]
+def _innermost_symbol_containing_range(
+    symbols: list[Symbol], target_range: Range
+) -> Symbol | None:
+    candidates = [
+        symbol for symbol in symbols if range_contains(symbol.range, target_range)
+    ]
     if not candidates:
         return None
     return min(candidates, key=lambda symbol: _range_size(symbol.range))
 
 
 def range_contains(outer: Range, inner: Range) -> bool:
-    return (outer.start_line, outer.start_col) <= (inner.start_line, inner.start_col) and (
-        inner.end_line,
-        inner.end_col,
-    ) <= (outer.end_line, outer.end_col)
+    return (outer.start_line, outer.start_col) <= (
+        inner.start_line,
+        inner.start_col,
+    ) and (inner.end_line, inner.end_col,) <= (outer.end_line, outer.end_col)
 
 
 def text_for_range(content: str, source_range: Range) -> str:
@@ -253,8 +279,12 @@ def text_for_range(content: str, source_range: Range) -> str:
 def offsets_for_range(content: str, source_range: Range) -> tuple[int, int]:
     line_starts = _line_starts(content)
     return (
-        _position_to_offset(content, line_starts, source_range.start_line, source_range.start_col),
-        _position_to_offset(content, line_starts, source_range.end_line, source_range.end_col),
+        _position_to_offset(
+            content, line_starts, source_range.start_line, source_range.start_col
+        ),
+        _position_to_offset(
+            content, line_starts, source_range.end_line, source_range.end_col
+        ),
     )
 
 
@@ -262,7 +292,9 @@ def range_from_offsets(content: str, start: int, end: int) -> Range:
     line_starts = _line_starts(content)
     start_line, start_col = _offset_to_position(line_starts, start)
     end_line, end_col = _offset_to_position(line_starts, end)
-    return Range(start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col)
+    return Range(
+        start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col
+    )
 
 
 def _line_starts(content: str) -> list[int]:
@@ -273,7 +305,9 @@ def _line_starts(content: str) -> list[int]:
     return starts
 
 
-def _position_to_offset(content: str, line_starts: list[int], line: int, column: int) -> int:
+def _position_to_offset(
+    content: str, line_starts: list[int], line: int, column: int
+) -> int:
     if line >= len(line_starts):
         return len(content)
     line_start = line_starts[line]
@@ -294,7 +328,12 @@ def _range_size(source_range: Range) -> tuple[int, int]:
 
 
 def _range_sort_key(source_range: Range) -> tuple[int, int, int, int]:
-    return (source_range.start_line, source_range.start_col, source_range.end_line, source_range.end_col)
+    return (
+        source_range.start_line,
+        source_range.start_col,
+        source_range.end_line,
+        source_range.end_col,
+    )
 
 
 __all__ = [

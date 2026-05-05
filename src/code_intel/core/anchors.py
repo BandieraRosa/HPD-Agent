@@ -13,7 +13,9 @@ class TextAnchor(BaseModel):
     """Fuzzy text anchor based on symbol names and surrounding source text."""
 
     path: str = Field(description="Workspace-relative path using forward slashes.")
-    symbol_name: str | None = Field(default=None, description="Nearby symbol name for disambiguation.")
+    symbol_name: str | None = Field(
+        default=None, description="Nearby symbol name for disambiguation."
+    )
     needle: str | None = Field(default=None, description="Text fragment to locate.")
     surrounding_before: str | None = Field(
         default=None,
@@ -38,9 +40,15 @@ class TextAnchor(BaseModel):
 class CodeTarget(BaseModel):
     """Unified code target with symbol_id, anchor, then location priority."""
 
-    symbol_id: str | None = Field(default=None, description="Stable symbol ID target, highest priority.")
-    anchor: TextAnchor | None = Field(default=None, description="Fuzzy text anchor target, second priority.")
-    location: Location | None = Field(default=None, description="Exact source location target, third priority.")
+    symbol_id: str | None = Field(
+        default=None, description="Stable symbol ID target, highest priority."
+    )
+    anchor: TextAnchor | None = Field(
+        default=None, description="Fuzzy text anchor target, second priority."
+    )
+    location: Location | None = Field(
+        default=None, description="Exact source location target, third priority."
+    )
 
     @field_validator("symbol_id")
     @classmethod

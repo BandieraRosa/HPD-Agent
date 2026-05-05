@@ -5,7 +5,13 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from src.code_intel.core import Capability, ConfidenceClass, ProviderHealth, ProviderStatus, Symbol
+from src.code_intel.core import (
+    Capability,
+    ConfidenceClass,
+    ProviderHealth,
+    ProviderStatus,
+    Symbol,
+)
 
 from .parser import SUPPORTED_LANGUAGES, TreeSitterParser
 
@@ -23,9 +29,14 @@ class TreeSitterProvider:
         health: ProviderHealth | None = None,
     ) -> None:
         self.name: str = name
-        self.capabilities: set[Capability] = {Capability.OUTLINE, Capability.DOCUMENT_SYMBOLS}
+        self.capabilities: set[Capability] = {
+            Capability.OUTLINE,
+            Capability.DOCUMENT_SYMBOLS,
+        }
         self.languages: set[str] = set(languages or SUPPORTED_LANGUAGES)
-        self.workspace_root: Path = Path(workspace_root).expanduser().resolve(strict=False)
+        self.workspace_root: Path = (
+            Path(workspace_root).expanduser().resolve(strict=False)
+        )
         self._parser: TreeSitterParser = parser or TreeSitterParser()
         self._configured_health: ProviderHealth | None = health
 
@@ -43,7 +54,9 @@ class TreeSitterProvider:
             )
         return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
 
-    async def confidence_for(self, capability: Capability, _language: str) -> ConfidenceClass:
+    async def confidence_for(
+        self, capability: Capability, _language: str
+    ) -> ConfidenceClass:
         if capability in self.capabilities:
             return ConfidenceClass.MEDIUM
         return ConfidenceClass.LOW
