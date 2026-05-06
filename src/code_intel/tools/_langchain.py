@@ -24,6 +24,34 @@ _KNOWN_LIST_RESULT_FIELDS = (
     "resolved_diagnostics",
     "unchanged_diagnostics",
 )
+_LEGACY_ERROR_PREFIX = "[Error]"
+
+
+def strip_legacy_error_prefix(result: str) -> str:
+    """Return a LangChain tool result without the legacy runtime error marker."""
+    if not result.startswith(_LEGACY_ERROR_PREFIX):
+        return result
+    return result[len(_LEGACY_ERROR_PREFIX) :].lstrip()
+
+
+def _tool_result_is_error(result: str) -> bool:
+    """Return whether a serialized top-level ToolResult represents an error."""
+    try:
+        payload_obj = cast(object, json.loads(strip_legacy_error_prefix(result)))
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload_obj, dict):
+        return False
+    payload = cast(dict[str, object], payload_obj)
+    return payload.get("ok") is False
+
+
+def _with_legacy_error_prefix(result: str) -> str:
+    """Add the legacy LangChain error marker only for top-level ToolResult errors."""
+    unprefixed = strip_legacy_error_prefix(result)
+    if not _tool_result_is_error(unprefixed):
+        return unprefixed
+    return f"{_LEGACY_ERROR_PREFIX} {unprefixed}"
 
 
 def code_intel_tool(func: _AsyncToolFunction) -> BaseTool:
@@ -35,8 +63,9 @@ def code_intel_tool(func: _AsyncToolFunction) -> BaseTool:
             f"code_intel.{func.__name__}", _tool_input_metadata(kwargs)
         ) as span:
             result = await func(*args, **kwargs)
-            span.add_metadata(_tool_result_metadata(result))
-            return result
+            unprefixed_result = strip_legacy_error_prefix(result)
+            span.add_metadata(_tool_result_metadata(unprefixed_result))
+            return _with_legacy_error_prefix(unprefixed_result)
 
     return cast(_AsyncToolDecorator, langchain_tools.tool)(traced_tool)
 
@@ -82,7 +111,7 @@ def _target_path(target: object) -> str | None:
 
 def _tool_result_metadata(result: str) -> dict[str, object]:
     try:
-        payload_obj = cast(object, json.loads(result))
+        payload_obj = cast(object, json.loads(strip_legacy_error_prefix(result)))
     except json.JSONDecodeError:
         return {}
     if not isinstance(payload_obj, dict):
@@ -125,4 +154,4 @@ def _known_result_count(data: object) -> int | None:
     return None
 
 
-__all__ = ["code_intel_tool"]
+__all__ = ["code_intel_tool", "strip_legacy_error_prefix"]

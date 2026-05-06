@@ -15,6 +15,7 @@ from src.code_intel import CodeIntelKernel
 from src.code_intel.core import Capability, Location, ToolResult
 from src.code_intel.providers.text_search import InvalidSearchPath, TextSearchProvider
 from src.code_intel.tools import code_search, set_code_intel_kernel
+from src.code_intel.tools._langchain import strip_legacy_error_prefix
 
 T = TypeVar("T")
 
@@ -33,7 +34,7 @@ async def _ainvoke_text(item: BaseTool, args: dict[str, object]) -> str:
 
 
 def _payload(raw: str) -> dict[str, object]:
-    return cast(dict[str, object], json.loads(raw))
+    return cast(dict[str, object], json.loads(strip_legacy_error_prefix(raw)))
 
 
 def _write(path: Path, content: str) -> None:
@@ -46,7 +47,10 @@ def _provider_result(result: ToolResult[object]) -> list[Location]:
     assert result.data is not None
     assert isinstance(result.data, list)
     items = cast(list[object], result.data)
-    return [item if isinstance(item, Location) else Location.model_validate(item) for item in items]
+    return [
+        item if isinstance(item, Location) else Location.model_validate(item)
+        for item in items
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -64,14 +68,19 @@ def test_text_search_respects_gitignore_and_limit(tmp_path: Path) -> None:
     provider = TextSearchProvider(tmp_path)
     kernel = CodeIntelKernel([provider])
 
-    result = _run(kernel.call(Capability.TEXT_SEARCH, "python", query="needle", limit=2))
+    result = _run(
+        kernel.call(Capability.TEXT_SEARCH, "python", query="needle", limit=2)
+    )
     locations = _provider_result(result)
 
     assert [location.path for location in locations] == ["src/a.py", "src/a.py"]
     assert result.meta.sources_used == ["text_search"]
     assert result.meta.more_available is True
     assert result.meta.truncated is False
-    assert all("ignored" not in location.path and location.path != "secret.txt" for location in locations)
+    assert all(
+        "ignored" not in location.path and location.path != "secret.txt"
+        for location in locations
+    )
     assert locations[0].range.start_line == 0
     assert locations[0].range.start_col == 0
     assert locations[0].range.end_col == len("needle")
@@ -82,7 +91,9 @@ def test_invalid_regex_returns_tool_error(tmp_path: Path) -> None:
     provider = TextSearchProvider(tmp_path)
     kernel = CodeIntelKernel([provider])
 
-    kernel_result = _run(kernel.call(Capability.TEXT_SEARCH, "python", query="(", regex=True, limit=5))
+    kernel_result = _run(
+        kernel.call(Capability.TEXT_SEARCH, "python", query="(", regex=True, limit=5)
+    )
 
     assert kernel_result.ok is False
     assert kernel_result.error is not None
@@ -90,7 +101,11 @@ def test_invalid_regex_returns_tool_error(tmp_path: Path) -> None:
     assert "正则" in kernel_result.error.message
 
     set_code_intel_kernel(kernel)
-    raw = _run(_ainvoke_text(code_search, {"query": "(", "mode": "text", "regex": True, "limit": 5}))
+    raw = _run(
+        _ainvoke_text(
+            code_search, {"query": "(", "mode": "text", "regex": True, "limit": 5}
+        )
+    )
     payload = _payload(raw)
     error = cast(dict[str, object], payload["error"])
 
@@ -99,14 +114,18 @@ def test_invalid_regex_returns_tool_error(tmp_path: Path) -> None:
     assert "正则" in cast(str, error["message"])
 
 
-def test_binary_and_oversized_files_are_skipped_with_truncated_meta(tmp_path: Path) -> None:
+def test_binary_and_oversized_files_are_skipped_with_truncated_meta(
+    tmp_path: Path,
+) -> None:
     _write(tmp_path / "small.py", "needle visible\n")
     _ = (tmp_path / "binary.bin").write_bytes(b"needle\0hidden")
     _write(tmp_path / "large.py", "needle " + ("x" * 80))
     provider = TextSearchProvider(tmp_path, max_file_size_bytes=32)
     kernel = CodeIntelKernel([provider])
 
-    result = _run(kernel.call(Capability.TEXT_SEARCH, "python", query="needle", limit=10))
+    result = _run(
+        kernel.call(Capability.TEXT_SEARCH, "python", query="needle", limit=10)
+    )
     locations = _provider_result(result)
 
     assert [location.path for location in locations] == ["small.py"]
@@ -120,7 +139,9 @@ def test_case_sensitivity_and_regex_ranges_are_correct(tmp_path: Path) -> None:
 
     insensitive = _run(provider.text_search("alpha", limit=10))
     sensitive = _run(provider.text_search("alpha", limit=10, case_sensitive=True))
-    regex = _run(provider.text_search(r"a\w+ token", limit=10, regex=True, case_sensitive=True))
+    regex = _run(
+        provider.text_search(r"a\w+ token", limit=10, regex=True, case_sensitive=True)
+    )
 
     assert [location.range.start_line for location in insensitive] == [0, 1]
     assert [location.range.start_line for location in sensitive] == [1]
@@ -150,7 +171,9 @@ def test_code_search_mixed_mode_falls_back_to_text_provider(tmp_path: Path) -> N
     _write(tmp_path / "src/app.py", "needle from text provider\n")
     set_code_intel_kernel(CodeIntelKernel([TextSearchProvider(tmp_path)]))
 
-    raw = _run(_ainvoke_text(code_search, {"query": "needle", "mode": "mixed", "limit": 5}))
+    raw = _run(
+        _ainvoke_text(code_search, {"query": "needle", "mode": "mixed", "limit": 5})
+    )
     payload = _payload(raw)
     data = cast(dict[str, object], payload["data"])
     matches = cast(list[dict[str, object]], data["matches"])
