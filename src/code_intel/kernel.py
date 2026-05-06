@@ -152,6 +152,25 @@ class CodeIntelKernel:
         self._providers.append(provider)
         return self
 
+    def attach_symbol_index(
+        self, store: SymbolIndexStore | None, workspace_root: str | Path = "."
+    ) -> "CodeIntelKernel":
+        """Attach or detach the symbol index facade without replacing providers."""
+        self._symbol_index = store
+        self._target_resolver = (
+            IndexBackedTargetResolver(store, workspace_root)
+            if store is not None
+            else None
+        )
+        self._context_extractor = (
+            IndexBackedCodeContext(
+                store, workspace_root, resolver=self._target_resolver
+            )
+            if store is not None and self._target_resolver is not None
+            else None
+        )
+        return self
+
     async def resolve_target(self, target: CodeTarget) -> ToolResult[object]:
         """Resolve a CodeTarget through the index-backed resolver when configured."""
         with trace_span(
