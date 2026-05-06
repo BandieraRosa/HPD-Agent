@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import re
 import stat
 from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from src.code_intel.core import (
     ProviderHealth,
     ProviderStatus,
     ProviderUnavailable,
+    Range,
     Symbol,
 )
 from src.code_intel.core.models import validate_workspace_relative_path
@@ -55,6 +57,53 @@ _ROUTED_CAPABILITIES = {
 _NO_ROUTED_CAPABILITIES_MESSAGE = "语言服务器未提供可用的代码智能能力。"
 _DIAGNOSTICS_READ_FAILURE_MESSAGE = "无法读取文件，无法同步 LSP 诊断。"
 _DEFAULT_MAX_SYNC_FILE_SIZE_BYTES = 1_000_000
+_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_DECLARATION_IDENTIFIER_PATTERNS = (
+    re.compile(r"\basync\s+def\s+([A-Za-z_][A-Za-z0-9_]*)"),
+    re.compile(r"\bdef\s+([A-Za-z_][A-Za-z0-9_]*)"),
+    re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)"),
+    re.compile(r"\bfrom\s+[A-Za-z_][A-Za-z0-9_.]*\s+import\s+([A-Za-z_][A-Za-z0-9_]*)"),
+    re.compile(r"\bimport\s+([A-Za-z_][A-Za-z0-9_]*)"),
+)
+_SEMANTIC_POSITION_KEYWORDS = {
+    "False",
+    "None",
+    "True",
+    "and",
+    "as",
+    "assert",
+    "async",
+    "await",
+    "break",
+    "case",
+    "class",
+    "continue",
+    "def",
+    "del",
+    "elif",
+    "else",
+    "except",
+    "finally",
+    "for",
+    "from",
+    "global",
+    "if",
+    "import",
+    "in",
+    "is",
+    "lambda",
+    "match",
+    "nonlocal",
+    "not",
+    "or",
+    "pass",
+    "raise",
+    "return",
+    "try",
+    "while",
+    "with",
+    "yield",
+}
 
 
 class _HealthState(str, Enum):
@@ -88,6 +137,12 @@ class _DocumentSnapshot:
 class _WorkspaceDocument:
     content: str
     snapshot: _DocumentSnapshot
+
+
+@dataclass(frozen=True)
+class _PendingDiagnosticsSync:
+    document_version: int
+    after_publish_version: int | None
 
 
 class _ProviderLSPClient(Protocol):
@@ -145,6 +200,7 @@ class LSPProvider:
         self._health_messages: dict[str, str] = {}
         self._restart_failures: dict[str, int] = {}
         self._diagnostics_cache: dict[str, list[Diagnostic]] = {}
+        self._diagnostics_pending_syncs: dict[str, _PendingDiagnosticsSync] = {}
         self._document_versions: dict[str, int] = {}
         self._document_snapshots: dict[str, _DocumentSnapshot] = {}
         self._document_locks: dict[str, asyncio.Lock] = {}
@@ -210,12 +266,15 @@ class LSPProvider:
         language = self._language_for_path(location.path)
         _ = self._language_context.set(language)
         client = await self._client_for_language(language, Capability.DEFINITION)
+        line, character = await self._prepare_semantic_request(
+            location, language, client
+        )
         return await self._with_unhealthy_on_unavailable(
             language,
             client.goto_definition(
                 location.path,
-                line=location.range.start_line,
-                character=location.range.start_col,
+                line=line,
+                character=character,
             ),
         )
 
@@ -224,12 +283,15 @@ class LSPProvider:
         language = self._language_for_path(location.path)
         _ = self._language_context.set(language)
         client = await self._client_for_language(language, Capability.REFERENCES)
+        line, character = await self._prepare_semantic_request(
+            location, language, client
+        )
         return await self._with_unhealthy_on_unavailable(
             language,
             client.find_references(
                 location.path,
-                line=location.range.start_line,
-                character=location.range.start_col,
+                line=line,
+                character=character,
                 include_declaration=True,
             ),
         )
@@ -239,12 +301,15 @@ class LSPProvider:
         language = self._language_for_path(location.path)
         _ = self._language_context.set(language)
         client = await self._client_for_language(language, Capability.HOVER)
+        line, character = await self._prepare_semantic_request(
+            location, language, client
+        )
         return await self._with_unhealthy_on_unavailable(
             language,
             client.hover(
                 location.path,
-                line=location.range.start_line,
-                character=location.range.start_col,
+                line=line,
+                character=character,
             ),
         )
 
@@ -265,6 +330,7 @@ class LSPProvider:
             document = await self._read_workspace_document(relative_path)
             client = await self._client_for_language(language, Capability.DIAGNOSTICS)
             after_version = self._diagnostics_version(client, relative_path)
+            pending_sync = self._diagnostics_pending_syncs.get(relative_path)
             if relative_path not in self._open_documents:
                 document_version = await self._did_open_with_client(
                     language, client, relative_path, document.content
@@ -276,6 +342,7 @@ class LSPProvider:
                     after_version=after_version,
                     document_version=document_version,
                 )
+                _ = self._diagnostics_pending_syncs.pop(relative_path, None)
             elif self._document_snapshots.get(relative_path) != document.snapshot:
                 document_version = await self._did_change_with_client(
                     language, client, relative_path, document.content
@@ -287,6 +354,15 @@ class LSPProvider:
                     after_version=after_version,
                     document_version=document_version,
                 )
+                _ = self._diagnostics_pending_syncs.pop(relative_path, None)
+            elif pending_sync is not None:
+                await self._wait_for_diagnostics_snapshot(
+                    client,
+                    relative_path,
+                    after_version=pending_sync.after_publish_version,
+                    document_version=pending_sync.document_version,
+                )
+                _ = self._diagnostics_pending_syncs.pop(relative_path, None)
             diagnostics = await self._with_unhealthy_on_unavailable(
                 language, client.diagnostics(relative_path)
             )
@@ -299,7 +375,15 @@ class LSPProvider:
         _ = self._language_context.set(language)
         async with self._document_lock(relative_path):
             client = await self._client_for_language(language, Capability.DIAGNOSTICS)
-            await self._did_open_with_client(language, client, relative_path, content)
+            after_publish_version = self._diagnostics_version(client, relative_path)
+            document_version = await self._did_open_with_client(
+                language, client, relative_path, content
+            )
+            self._mark_pending_diagnostics_sync(
+                relative_path,
+                document_version=document_version,
+                after_publish_version=after_publish_version,
+            )
             snapshot = await self._try_workspace_document_snapshot(relative_path)
             if snapshot is not None:
                 self._document_snapshots[relative_path] = snapshot
@@ -311,11 +395,23 @@ class LSPProvider:
         async with self._document_lock(relative_path):
             client = await self._client_for_language(language, Capability.DIAGNOSTICS)
             if relative_path not in self._open_documents:
-                await self._did_open_with_client(
+                after_publish_version = self._diagnostics_version(client, relative_path)
+                document_version = await self._did_open_with_client(
                     language, client, relative_path, new_content
                 )
-            await self._did_change_with_client(
+                self._mark_pending_diagnostics_sync(
+                    relative_path,
+                    document_version=document_version,
+                    after_publish_version=after_publish_version,
+                )
+            after_publish_version = self._diagnostics_version(client, relative_path)
+            document_version = await self._did_change_with_client(
                 language, client, relative_path, new_content
+            )
+            self._mark_pending_diagnostics_sync(
+                relative_path,
+                document_version=document_version,
+                after_publish_version=after_publish_version,
             )
             snapshot = await self._try_workspace_document_snapshot(relative_path)
             if snapshot is not None:
@@ -330,8 +426,14 @@ class LSPProvider:
         async with self._document_lock(relative_path):
             client = await self._client_for_language(language, Capability.DIAGNOSTICS)
             if relative_path not in self._open_documents and content is not None:
-                await self._did_open_with_client(
+                after_publish_version = self._diagnostics_version(client, relative_path)
+                document_version = await self._did_open_with_client(
                     language, client, relative_path, content
+                )
+                self._mark_pending_diagnostics_sync(
+                    relative_path,
+                    document_version=document_version,
+                    after_publish_version=after_publish_version,
                 )
                 snapshot = await self._try_workspace_document_snapshot(relative_path)
                 if snapshot is not None:
@@ -412,6 +514,7 @@ class LSPProvider:
             self._document_versions.clear()
             self._document_snapshots.clear()
             self._diagnostics_cache.clear()
+            self._diagnostics_pending_syncs.clear()
             return
         self._forget_documents_for_language(language)
 
@@ -508,6 +611,89 @@ class LSPProvider:
         )
         return version
 
+    async def _prepare_semantic_request(
+        self,
+        location: Location,
+        language: str,
+        client: _ProviderLSPClient,
+    ) -> tuple[int, int]:
+        relative_path = self._validate_path(location.path)
+        fallback = (location.range.start_line, location.range.start_col)
+        async with self._document_lock(relative_path):
+            try:
+                document = await self._read_workspace_document(relative_path)
+            except ProviderUnavailable:
+                return fallback
+            if relative_path not in self._open_documents:
+                after_publish_version = self._diagnostics_version(client, relative_path)
+                document_version = await self._did_open_with_client(
+                    language, client, relative_path, document.content
+                )
+                self._document_snapshots[relative_path] = document.snapshot
+                self._mark_pending_diagnostics_sync(
+                    relative_path,
+                    document_version=document_version,
+                    after_publish_version=after_publish_version,
+                )
+            elif self._document_snapshots.get(relative_path) != document.snapshot:
+                after_publish_version = self._diagnostics_version(client, relative_path)
+                document_version = await self._did_change_with_client(
+                    language, client, relative_path, document.content
+                )
+                self._document_snapshots[relative_path] = document.snapshot
+                self._mark_pending_diagnostics_sync(
+                    relative_path,
+                    document_version=document_version,
+                    after_publish_version=after_publish_version,
+                )
+            return self._semantic_position_from_content(
+                document.content, location.range
+            )
+
+    @classmethod
+    def _semantic_position_from_content(
+        cls, content: str, target_range: Range
+    ) -> tuple[int, int]:
+        fallback = (target_range.start_line, target_range.start_col)
+        lines = content.splitlines()
+        if target_range.start_line >= len(lines):
+            return fallback
+        line = lines[target_range.start_line]
+        start_col = min(target_range.start_col, len(line))
+        if target_range.end_line == target_range.start_line:
+            end_col = min(max(target_range.end_col, start_col), len(line))
+            if end_col <= start_col:
+                end_col = len(line)
+        else:
+            end_col = len(line)
+        offset = cls._semantic_identifier_offset(line[start_col:end_col])
+        if offset is None:
+            return fallback
+        return (target_range.start_line, start_col + offset)
+
+    @staticmethod
+    def _semantic_identifier_offset(segment: str) -> int | None:
+        for pattern in _DECLARATION_IDENTIFIER_PATTERNS:
+            match = pattern.search(segment)
+            if match is not None:
+                return match.start(1)
+        for match in _IDENTIFIER_PATTERN.finditer(segment):
+            if match.group(0) not in _SEMANTIC_POSITION_KEYWORDS:
+                return match.start()
+        return None
+
+    def _mark_pending_diagnostics_sync(
+        self,
+        relative_path: str,
+        *,
+        document_version: int,
+        after_publish_version: int | None,
+    ) -> None:
+        self._diagnostics_pending_syncs[relative_path] = _PendingDiagnosticsSync(
+            document_version=document_version,
+            after_publish_version=after_publish_version,
+        )
+
     def _diagnostics_version(
         self, client: _ProviderLSPClient, relative_path: str
     ) -> int | None:
@@ -603,6 +789,7 @@ class LSPProvider:
             | set(self._document_versions)
             | set(self._document_snapshots)
             | set(self._diagnostics_cache)
+            | set(self._diagnostics_pending_syncs)
         )
         for tracked_path in tracked_paths:
             if self._language_for_path(tracked_path) != language:
@@ -611,6 +798,7 @@ class LSPProvider:
             _ = self._document_versions.pop(tracked_path, None)
             _ = self._document_snapshots.pop(tracked_path, None)
             _ = self._diagnostics_cache.pop(tracked_path, None)
+            _ = self._diagnostics_pending_syncs.pop(tracked_path, None)
 
     def _record_capabilities(
         self, language: str, server_capabilities: lsp_types.ServerCapabilities
