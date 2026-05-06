@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Awaitable, Coroutine, Generator
+from pathlib import Path
 from typing import Protocol, TypeVar, cast
 
 from langchain_core.tools import BaseTool
@@ -29,7 +31,11 @@ from src.code_intel.core import (
     ProviderHealth,
     ProviderStatus,
     ProviderUnavailable,
+    Range,
+    Symbol,
+    SymbolKind,
 )
+from src.code_intel.index import CurrentFileForStore, SymbolIndexStore
 from src.code_intel.verifier import clear_baseline_cache
 from src.code_intel.tools import (
     code_context,
@@ -114,6 +120,67 @@ def test_code_search_symbol_text_and_mixed_modes_return_tool_result_json() -> No
         isinstance(match["snippet"], str) and match["snippet"]
         for match in mixed_matches
     )
+
+
+def test_code_search_symbol_mode_uses_attached_symbol_index(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        source_path = "src/indexed.py"
+        content = "def indexed_symbol():\n    return 1\n"
+        file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+        symbol = Symbol(
+            name="indexed_symbol",
+            qualified_name="indexed_symbol",
+            kind=SymbolKind.FUNCTION,
+            language="python",
+            path=source_path,
+            range=Range(start_line=0, start_col=0, end_line=1, end_col=12),
+            selection_range=Range(start_line=0, start_col=4, end_line=0, end_col=18),
+            parent_id=None,
+            signature="def indexed_symbol():",
+            doc=None,
+            source="test_index",
+            confidence=0.9,
+            file_hash=file_hash,
+            index_version="test-v1",
+        )
+        store = SymbolIndexStore(tmp_path / "symbols.db")
+        try:
+            await store.initialize()
+            await store.store_symbols(
+                CurrentFileForStore(
+                    path=source_path,
+                    language="python",
+                    sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    mtime=1.0,
+                    size=len(content),
+                    grammar_version="grammar-v1",
+                    query_version="query-v1",
+                ),
+                [symbol],
+            )
+            set_code_intel_kernel(
+                CodeIntelKernel(symbol_index=store, workspace_root=tmp_path)
+            )
+
+            data = _data(
+                await _ainvoke_text(
+                    code_search,
+                    {
+                        "query": "indexed",
+                        "mode": "symbol",
+                        "kind": "function",
+                        "limit": 10,
+                    },
+                )
+            )
+
+            matches = cast(list[dict[str, object]], data["matches"])
+            assert [match["name"] for match in matches] == ["indexed_symbol"]
+            assert matches[0]["source"] == "test_index"
+        finally:
+            await store.close()
+
+    _run(scenario())
 
 
 def test_code_outline_returns_file_symbols_and_stable_line_count_estimate() -> None:

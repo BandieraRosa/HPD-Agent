@@ -21,6 +21,7 @@ from .core import (
     ProviderHealth,
     ProviderStatus,
     ProviderUnavailable,
+    SymbolKind,
     TargetResolver,
     ToolMeta,
     ToolResult,
@@ -370,6 +371,41 @@ class CodeIntelKernel:
         if self._symbol_index is None:
             return None
 
+        if capability == Capability.SYMBOL_SEARCH:
+            query = kwargs.get("query")
+            if not isinstance(query, str):
+                return None
+            limit = kwargs.get("limit", 20)
+            if not isinstance(limit, int):
+                return None
+            try:
+                kind = self._coerce_symbol_kind(kwargs.get("kind"))
+            except ValueError:
+                return None
+            with trace_span(
+                "code_intel.provider.symbol_index.symbol_search",
+                {
+                    "provider_name": _INDEX_PROVIDER_NAME,
+                    "capability": capability.value,
+                },
+            ) as span:
+                try:
+                    await self._symbol_index.initialize()
+                    symbols = await self._symbol_index.search_symbols(
+                        query, kind=kind, limit=limit
+                    )
+                except CodeIntelError as error:
+                    result = self._index_error_result(error, started_at)
+                    span.add_metadata(self._result_trace_metadata(result))
+                    return result
+                except Exception:
+                    result = self._index_error_result(CodeIntelError(), started_at)
+                    span.add_metadata(self._result_trace_metadata(result))
+                    return result
+                result = self._index_success_result(symbols, started_at)
+                span.add_metadata(self._result_trace_metadata(result))
+                return result
+
         if capability == Capability.DOCUMENT_SYMBOLS:
             path = kwargs.get("path")
             if not isinstance(path, str):
@@ -440,6 +476,16 @@ class CodeIntelKernel:
                 return result
 
         return None
+
+    @staticmethod
+    def _coerce_symbol_kind(value: object) -> SymbolKind | None:
+        if value is None:
+            return None
+        if isinstance(value, SymbolKind):
+            return value
+        if isinstance(value, str):
+            return SymbolKind(value)
+        raise ValueError("invalid symbol kind")
 
     @staticmethod
     def _coerce_context_parts(value: object) -> set[ContextPart] | None:
