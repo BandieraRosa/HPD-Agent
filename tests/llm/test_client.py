@@ -18,7 +18,7 @@ class TestInvokeWithToolsBudget(unittest.IsolatedAsyncioTestCase):
 
         tool = MagicMock()
         tool.name = "read_file"
-        tool.invoke.return_value = "ok"
+        tool.ainvoke = AsyncMock(return_value="ok")
 
         from src.llm.client import invoke_with_tools
 
@@ -41,7 +41,7 @@ class TestInvokeWithToolsBudget(unittest.IsolatedAsyncioTestCase):
 
         tool = MagicMock()
         tool.name = "read_file"
-        tool.invoke.return_value = "ok"
+        tool.ainvoke = AsyncMock(return_value="ok")
 
         from src.llm.client import invoke_with_tools
 
@@ -72,7 +72,7 @@ class TestInvokeWithToolsBudget(unittest.IsolatedAsyncioTestCase):
 
         tool = MagicMock()
         tool.name = "read_file"
-        tool.invoke.return_value = "ok"
+        tool.ainvoke = AsyncMock(return_value="ok")
 
         from src.llm.client import invoke_with_tools
 
