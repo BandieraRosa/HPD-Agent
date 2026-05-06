@@ -98,6 +98,9 @@ class IndexBackedTargetResolver:
             history.path,
             history.qualified_name,
             language=history.language,
+            kind=history.kind,
+            selection_start_line=history.selection_start_line,
+            selection_start_col=history.selection_start_col,
         )
         if recovered is None:
             return None

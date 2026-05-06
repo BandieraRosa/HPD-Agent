@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import TypeVar
 
 from src.code_intel import CodeIntelKernel
-from src.code_intel.core import CodeTarget, Location, Range, Symbol, SymbolKind, TextAnchor
+from src.code_intel.core import (
+    CodeTarget,
+    Location,
+    Range,
+    Symbol,
+    SymbolKind,
+    TextAnchor,
+)
 from src.code_intel.index import (
     CurrentFileForStore,
     IndexBackedTargetResolver,
@@ -46,7 +53,9 @@ def _metadata(path: str, content: str) -> CurrentFileForStore:
 
 
 def _range(start_line: int, start_col: int, end_line: int, end_col: int) -> Range:
-    return Range(start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col)
+    return Range(
+        start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col
+    )
 
 
 def _symbol(
@@ -57,11 +66,12 @@ def _symbol(
     file_hash: str,
     symbol_range: Range,
     selection_range: Range | None = None,
+    kind: SymbolKind = SymbolKind.FUNCTION,
 ) -> Symbol:
     return Symbol(
         name=name,
         qualified_name=qualified_name,
-        kind=SymbolKind.FUNCTION,
+        kind=kind,
         language="python",
         path=path,
         range=symbol_range,
@@ -102,7 +112,9 @@ def test_resolver_prefers_symbol_id_then_anchor_then_location(tmp_path: Path) ->
         )
         try:
             await store.initialize()
-            await store.store_symbols(_metadata(path, content), [target_symbol, fallback_symbol])
+            await store.store_symbols(
+                _metadata(path, content), [target_symbol, fallback_symbol]
+            )
             resolver = IndexBackedTargetResolver(store, workspace)
             low_priority_location = Location(path=path, range=_range(4, 4, 4, 10))
 
@@ -114,9 +126,14 @@ def test_resolver_prefers_symbol_id_then_anchor_then_location(tmp_path: Path) ->
                 )
             )
             by_anchor = await resolver.resolve_target(
-                CodeTarget(anchor=TextAnchor(path=path, symbol_name="fallback"), location=low_priority_location)
+                CodeTarget(
+                    anchor=TextAnchor(path=path, symbol_name="fallback"),
+                    location=low_priority_location,
+                )
             )
-            by_location = await resolver.resolve_target(CodeTarget(location=low_priority_location))
+            by_location = await resolver.resolve_target(
+                CodeTarget(location=low_priority_location)
+            )
 
             assert by_symbol.source == "symbol_id"
             assert by_symbol.symbol is not None
@@ -159,7 +176,9 @@ def test_stale_symbol_id_recovers_via_history_by_qualified_name(tmp_path: Path) 
             await store.store_symbols(_metadata(path, new_content), [new_symbol])
             resolver = IndexBackedTargetResolver(store, tmp_path)
 
-            recovered = await resolver.resolve_target(CodeTarget(symbol_id=old_symbol.id))
+            recovered = await resolver.resolve_target(
+                CodeTarget(symbol_id=old_symbol.id)
+            )
 
             assert recovered.symbol is not None
             assert recovered.symbol.id == new_symbol.id
@@ -171,7 +190,80 @@ def test_stale_symbol_id_recovers_via_history_by_qualified_name(tmp_path: Path) 
     _run(scenario())
 
 
-def test_unresolved_stale_symbol_id_returns_symbol_not_found_with_code_search_hint(tmp_path: Path) -> None:
+def test_stale_symbol_id_recovery_disambiguates_same_name_module_and_function(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        path = "src/main.py"
+        old_content = "def main():\n    return 1\n"
+        new_content = "def main():\n    return 2\n"
+        store = SymbolIndexStore(tmp_path / "symbols.db")
+        old_hash = _hash(old_content)
+        new_hash = _hash(new_content)
+        old_module = _symbol(
+            name="main",
+            qualified_name="main",
+            path=path,
+            file_hash=old_hash,
+            symbol_range=_range(0, 0, 2, 0),
+            selection_range=_range(0, 0, 2, 0),
+            kind=SymbolKind.MODULE,
+        )
+        old_function = _symbol(
+            name="main",
+            qualified_name="main",
+            path=path,
+            file_hash=old_hash,
+            symbol_range=_range(0, 0, 1, 12),
+            selection_range=_range(0, 4, 0, 8),
+            kind=SymbolKind.FUNCTION,
+        )
+        new_module = _symbol(
+            name="main",
+            qualified_name="main",
+            path=path,
+            file_hash=new_hash,
+            symbol_range=_range(0, 0, 2, 0),
+            selection_range=_range(0, 0, 2, 0),
+            kind=SymbolKind.MODULE,
+        )
+        new_function = _symbol(
+            name="main",
+            qualified_name="main",
+            path=path,
+            file_hash=new_hash,
+            symbol_range=_range(0, 0, 1, 12),
+            selection_range=_range(0, 4, 0, 8),
+            kind=SymbolKind.FUNCTION,
+        )
+        try:
+            await store.initialize()
+            await store.store_symbols(
+                _metadata(path, old_content), [old_module, old_function]
+            )
+            await store.store_symbols(
+                _metadata(path, new_content), [new_module, new_function]
+            )
+            resolver = IndexBackedTargetResolver(store, tmp_path / "workspace")
+
+            recovered = await resolver.resolve_target(
+                CodeTarget(symbol_id=old_function.id)
+            )
+
+            assert recovered.source == "symbol_id_history"
+            assert recovered.symbol is not None
+            assert recovered.symbol.kind == SymbolKind.FUNCTION
+            assert recovered.symbol.id == new_function.id
+            assert recovered.location.range == new_function.selection_range
+        finally:
+            await store.close()
+
+    _run(scenario())
+
+
+def test_unresolved_stale_symbol_id_returns_symbol_not_found_with_code_search_hint(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         path = "src/app.py"
         old_content = "def gone():\n    return 1\n"
@@ -195,9 +287,9 @@ def test_unresolved_stale_symbol_id_returns_symbol_not_found_with_code_search_hi
             await store.initialize()
             await store.store_symbols(_metadata(path, old_content), [old_symbol])
             await store.store_symbols(_metadata(path, new_content), [renamed_symbol])
-            result = await CodeIntelKernel(symbol_index=store, workspace_root=tmp_path).resolve_target(
-                CodeTarget(symbol_id=old_symbol.id)
-            )
+            result = await CodeIntelKernel(
+                symbol_index=store, workspace_root=tmp_path
+            ).resolve_target(CodeTarget(symbol_id=old_symbol.id))
 
             assert result.ok is False
             assert result.error is not None
@@ -211,7 +303,9 @@ def test_unresolved_stale_symbol_id_returns_symbol_not_found_with_code_search_hi
     _run(scenario())
 
 
-def test_ambiguous_text_anchor_returns_symbol_not_found_tool_error(tmp_path: Path) -> None:
+def test_ambiguous_text_anchor_returns_symbol_not_found_tool_error(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         path = "src/app.py"
@@ -236,7 +330,9 @@ def test_ambiguous_text_anchor_returns_symbol_not_found_tool_error(tmp_path: Pat
         try:
             await store.initialize()
             await store.store_symbols(_metadata(path, content), [first, second])
-            result = await CodeIntelKernel(symbol_index=store, workspace_root=workspace).resolve_target(
+            result = await CodeIntelKernel(
+                symbol_index=store, workspace_root=workspace
+            ).resolve_target(
                 CodeTarget(anchor=TextAnchor(path=path, needle="return value"))
             )
 
