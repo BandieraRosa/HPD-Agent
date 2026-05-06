@@ -86,7 +86,7 @@ def test_default_registry_specs_include_exact_install_hints() -> None:
     specs = default_language_server_specs()
 
     assert specs["python"].detect_command == ["pyright", "--version"]
-    assert specs["python"].launch_command == ["pyright", "--stdio"]
+    assert specs["python"].launch_command == ["pyright-langserver", "--stdio"]
     assert specs["python"].install_hint == "npm i -g pyright"
     assert specs["typescript"].install_hint == "npm i -g typescript-language-server typescript"
     assert specs["javascript"].install_hint == "npm i -g typescript-language-server typescript"
