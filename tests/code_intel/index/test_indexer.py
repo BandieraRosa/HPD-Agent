@@ -11,7 +11,16 @@ from typing import TypeVar
 import pytest
 
 from src.code_intel.core import IndexStale, Range, Symbol, SymbolKind
-from src.code_intel.index import SymbolIndexer, SymbolIndexStore, default_symbol_index_path
+from src.code_intel.index import (
+    SymbolIndexer,
+    SymbolIndexStore,
+    default_symbol_index_path,
+)
+from src.code_intel.providers.tree_sitter import (
+    TREE_SITTER_INDEX_VERSION,
+    TREE_SITTER_QUERY_VERSION,
+    TreeSitterProvider,
+)
 
 T = TypeVar("T")
 
@@ -33,9 +42,13 @@ class _SimpleExtractor:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def __call__(self, workspace_root: Path, path: str, language: str) -> Sequence[Symbol]:
+    def __call__(
+        self, workspace_root: Path, path: str, language: str
+    ) -> Sequence[Symbol]:
         self.calls.append(path)
-        file_hash = hashlib.sha256((workspace_root / path).read_bytes()).hexdigest()[:16]
+        file_hash = hashlib.sha256((workspace_root / path).read_bytes()).hexdigest()[
+            :16
+        ]
         return [
             Symbol(
                 name=Path(path).stem,
@@ -61,13 +74,17 @@ class _StaleOnceExtractor:
         self.calls: list[str] = []
         self._raised: bool = False
 
-    def __call__(self, workspace_root: Path, path: str, language: str) -> Sequence[Symbol]:
+    def __call__(
+        self, workspace_root: Path, path: str, language: str
+    ) -> Sequence[Symbol]:
         if not self._raised:
             self._raised = True
             self.calls.append(f"stale:{path}")
             raise IndexStale("simulated stale index")
         self.calls.append(path)
-        file_hash = hashlib.sha256((workspace_root / path).read_bytes()).hexdigest()[:16]
+        file_hash = hashlib.sha256((workspace_root / path).read_bytes()).hexdigest()[
+            :16
+        ]
         return [
             Symbol(
                 name=Path(path).stem,
@@ -88,18 +105,27 @@ class _StaleOnceExtractor:
         ]
 
 
-def test_default_cache_path_hashes_workspace_under_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_cache_path_hashes_workspace_under_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setenv("HOME", str(home))
 
-    expected_key = hashlib.sha256(str(workspace.resolve(strict=False)).encode("utf-8")).hexdigest()
+    expected_key = hashlib.sha256(
+        str(workspace.resolve(strict=False)).encode("utf-8")
+    ).hexdigest()
 
-    assert default_symbol_index_path(workspace) == home / ".hpagent" / "index" / expected_key / "symbols.db"
+    assert (
+        default_symbol_index_path(workspace)
+        == home / ".hpagent" / "index" / expected_key / "symbols.db"
+    )
 
 
-def test_workspace_scan_skips_ignored_secret_binary_oversized_and_symlink(tmp_path: Path) -> None:
+def test_workspace_scan_skips_ignored_secret_binary_oversized_and_symlink(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         cache = tmp_path / "cache" / "symbols.db"
@@ -127,7 +153,11 @@ def test_workspace_scan_skips_ignored_secret_binary_oversized_and_symlink(tmp_pa
         )
         try:
             result = await indexer.index_workspace()
-            statuses = {(status.path, status.reason) for status in result.statuses if status.status == "skipped"}
+            statuses = {
+                (status.path, status.reason)
+                for status in result.statuses
+                if status.status == "skipped"
+            }
             symbols = await store.get_symbols()
 
             assert extractor.calls == ["visible.py"]
@@ -148,7 +178,9 @@ def test_workspace_scan_skips_ignored_secret_binary_oversized_and_symlink(tmp_pa
     _run(scenario())
 
 
-def test_index_file_skips_symlink_that_resolves_inside_workspace(tmp_path: Path) -> None:
+def test_index_file_skips_symlink_that_resolves_inside_workspace(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         cache = tmp_path / "cache" / "symbols.db"
@@ -175,7 +207,9 @@ def test_index_file_skips_symlink_that_resolves_inside_workspace(tmp_path: Path)
     _run(scenario())
 
 
-def test_index_file_self_heals_index_stale_by_rebuilding_single_file(tmp_path: Path) -> None:
+def test_index_file_self_heals_index_stale_by_rebuilding_single_file(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         cache = tmp_path / "cache" / "symbols.db"
@@ -210,10 +244,53 @@ def test_index_file_self_heals_index_stale_by_rebuilding_single_file(tmp_path: P
             assert second_decision.should_rebuild is True
             assert stale_extractor.calls == ["stale:target.py", "target.py"]
             assert second_symbol.id != first_symbol.id
-            assert {entry.symbol_id for entry in history if entry.path == "target.py"} == {
+            assert {
+                entry.symbol_id for entry in history if entry.path == "target.py"
+            } == {
                 first_symbol.id,
                 second_symbol.id,
             }
+        finally:
+            await store.close()
+
+    _run(scenario())
+
+
+def test_index_file_handles_module_and_same_name_function_from_tree_sitter(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        workspace = tmp_path / "workspace"
+        cache = tmp_path / "cache" / "symbols.db"
+        source_path = "src/main.py"
+        _write(workspace / source_path, "def main():\n    return 1\n")
+        provider = TreeSitterProvider(workspace)
+        store = SymbolIndexStore(cache)
+
+        async def extract_symbols(
+            workspace_root: Path, path: str, language: str
+        ) -> Sequence[Symbol]:
+            _ = workspace_root, language
+            return await provider.outline(path)
+
+        indexer = SymbolIndexer(
+            workspace,
+            store=store,
+            extractor=extract_symbols,
+            grammar_version=TREE_SITTER_INDEX_VERSION,
+            query_version=TREE_SITTER_QUERY_VERSION,
+        )
+        try:
+            decision = await indexer.index_file(source_path)
+            symbols = await store.get_symbols(source_path)
+
+            assert decision.should_rebuild is True
+            assert len(symbols) == 2
+            assert [(symbol.kind, symbol.name) for symbol in symbols[:2]] == [
+                (SymbolKind.MODULE, "main"),
+                (SymbolKind.FUNCTION, "main"),
+            ]
+            assert len({symbol.id for symbol in symbols}) == len(symbols)
         finally:
             await store.close()
 

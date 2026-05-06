@@ -54,7 +54,8 @@ def _symbol(
         language=language,
         path=path,
         range=symbol_range or _range(),
-        selection_range=selection_range or Range(start_line=1, start_col=6, end_line=1, end_col=11),
+        selection_range=selection_range
+        or Range(start_line=1, start_col=6, end_line=1, end_col=11),
         parent_id=parent_id,
         signature=signature,
         doc=doc,
@@ -129,7 +130,9 @@ def test_location_rejects_invalid_workspace_paths(bad_path: str) -> None:
 def test_symbol_id_is_deterministic_and_uses_qualified_name() -> None:
     symbol = _symbol()
     expected = hashlib.sha1(
-        "python:src/service.py:UserService.login:deadbeefcafebabe".encode("utf-8")
+        "python:src/service.py:method:UserService.login:1:6:deadbeefcafebabe".encode(
+            "utf-8"
+        )
     ).hexdigest()[:16]
 
     assert symbol.id == expected
@@ -139,10 +142,31 @@ def test_symbol_id_is_deterministic_and_uses_qualified_name() -> None:
 def test_symbol_id_falls_back_to_name_when_qualified_name_is_missing() -> None:
     symbol = _symbol(qualified_name=None)
     expected = hashlib.sha1(
-        "python:src/service.py:login:deadbeefcafebabe".encode("utf-8")
+        "python:src/service.py:method:login:1:6:deadbeefcafebabe".encode("utf-8")
     ).hexdigest()[:16]
 
     assert symbol.id == expected
+
+
+def test_symbol_id_distinguishes_kind_and_selection_position() -> None:
+    module_symbol = _symbol(
+        name="main",
+        qualified_name="main",
+        kind=SymbolKind.MODULE,
+        path="src/main.py",
+        symbol_range=Range(start_line=0, start_col=0, end_line=10, end_col=0),
+        selection_range=Range(start_line=0, start_col=0, end_line=10, end_col=0),
+    )
+    function_symbol = _symbol(
+        name="main",
+        qualified_name="main",
+        kind=SymbolKind.FUNCTION,
+        path="src/main.py",
+        symbol_range=Range(start_line=8, start_col=0, end_line=9, end_col=12),
+        selection_range=Range(start_line=8, start_col=4, end_line=8, end_col=8),
+    )
+
+    assert module_symbol.id != function_symbol.id
 
 
 def test_enum_values_serialize_as_lowercase_english_strings() -> None:
@@ -234,7 +258,11 @@ def test_code_context_and_hover_info_are_typed_models() -> None:
         nearby_symbols=[_symbol(name="logout", qualified_name="UserService.logout")],
         truncated=False,
     )
-    hover = HoverInfo(contents="(method) UserService.login(user: str) -> Token", range=_range(), source="lsp")
+    hover = HoverInfo(
+        contents="(method) UserService.login(user: str) -> Token",
+        range=_range(),
+        source="lsp",
+    )
 
     dumped = context.model_dump(mode="json")
 
