@@ -12,8 +12,16 @@ from typing import Protocol, TypeVar, cast
 from pydantic import BaseModel
 
 from src.code_intel import CodeIntelKernel
-from src.code_intel.core import Capability, ConfidenceClass, ProviderHealth, ProviderStatus, Range, ToolResult
+from src.code_intel.core import (
+    Capability,
+    ConfidenceClass,
+    ProviderHealth,
+    ProviderStatus,
+    Range,
+    ToolResult,
+)
 from src.code_intel.tools import code_outline, set_code_intel_kernel
+from src.code_intel.tools._langchain import strip_legacy_error_prefix
 from src.code_intel.tools.models import CodeSearchData, SearchMatch
 from src.code_intel.tracing import ALLOWED_TRACE_FIELDS, redact
 
@@ -51,7 +59,9 @@ class _MalformedOutlineProvider:
     async def health(self) -> ProviderHealth:
         return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
 
-    async def confidence_for(self, _capability: Capability, _language: str) -> ConfidenceClass:
+    async def confidence_for(
+        self, _capability: Capability, _language: str
+    ) -> ConfidenceClass:
         return ConfidenceClass.HIGH
 
     async def outline(self, path: str) -> list[object]:
@@ -73,7 +83,9 @@ def _serialized(value: object) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
-def test_trace_redaction_drops_raw_lsp_tree_sitter_source_and_absolute_paths(tmp_path: Path) -> None:
+def test_trace_redaction_drops_raw_lsp_tree_sitter_source_and_absolute_paths(
+    tmp_path: Path,
+) -> None:
     raw = {
         "provider_name": "lsp",
         "capability": "diagnostics",
@@ -93,13 +105,17 @@ def test_trace_redaction_drops_raw_lsp_tree_sitter_source_and_absolute_paths(tmp
 
     assert metadata["paths"] == ["src/app.py"]
     assert "path" not in metadata
-    assert metadata["diagnostic_templates"] == ["Cannot find name <quoted> at line <line>"]
+    assert metadata["diagnostic_templates"] == [
+        "Cannot find name <quoted> at line <line>"
+    ]
     assert str(tmp_path) not in serialized
     for token in _RAW_BOUNDARY_TOKENS + _SECRET_TOKENS:
         assert token not in serialized
 
 
-def test_serialized_tool_result_contains_only_normalized_fields_not_raw_provider_objects(tmp_path: Path) -> None:
+def test_serialized_tool_result_contains_only_normalized_fields_not_raw_provider_objects(
+    tmp_path: Path,
+) -> None:
     result = ToolResult[object](
         ok=True,
         data=CodeSearchData(
@@ -149,7 +165,7 @@ def test_malformed_provider_tool_output_returns_safe_validation_error_json() -> 
     finally:
         set_code_intel_kernel(None)
 
-    payload = cast(dict[str, object], json.loads(raw))
+    payload = cast(dict[str, object], json.loads(strip_legacy_error_prefix(raw)))
     serialized = _serialized(payload)
 
     assert payload["ok"] is False
@@ -158,4 +174,3 @@ def test_malformed_provider_tool_output_returns_safe_validation_error_json() -> 
     assert error["hint"] == "请检查 target、include、mode、operation 或路径参数。"
     for token in _RAW_BOUNDARY_TOKENS + _SECRET_TOKENS:
         assert token not in serialized
-

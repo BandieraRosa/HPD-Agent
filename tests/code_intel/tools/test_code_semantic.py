@@ -27,6 +27,7 @@ from src.code_intel.core import (
 )
 from src.code_intel.index import CurrentFileForStore, SymbolIndexStore
 from src.code_intel.tools import code_semantic, set_code_intel_kernel
+from src.code_intel.tools._langchain import strip_legacy_error_prefix
 
 T = TypeVar("T")
 
@@ -45,7 +46,7 @@ async def _ainvoke_text(item: BaseTool, args: dict[str, object]) -> str:
 
 
 def _payload(raw: str) -> dict[str, object]:
-    return cast(dict[str, object], json.loads(raw))
+    return cast(dict[str, object], json.loads(strip_legacy_error_prefix(raw)))
 
 
 class _ResolvingReferencesProvider:
@@ -100,7 +101,9 @@ def _write(path: Path, content: str) -> None:
 
 
 def _range(start_line: int, start_col: int, end_line: int, end_col: int) -> Range:
-    return Range(start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col)
+    return Range(
+        start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col
+    )
 
 
 def _metadata(path: str, content: str) -> CurrentFileForStore:
@@ -186,8 +189,12 @@ def indexed_semantic_kernel(tmp_path: Path) -> Generator[dict[str, object], None
         )
         store = SymbolIndexStore(tmp_path / "symbols.db")
         await store.initialize()
-        await store.store_symbols(_metadata(source_path, content), [service, run, helper])
-        set_code_intel_kernel(CodeIntelKernel(symbol_index=store, workspace_root=workspace))
+        await store.store_symbols(
+            _metadata(source_path, content), [service, run, helper]
+        )
+        set_code_intel_kernel(
+            CodeIntelKernel(symbol_index=store, workspace_root=workspace)
+        )
         return {"store": store, "workspace": workspace, "path": source_path, "run": run}
 
     state = _run(prepare())
@@ -198,7 +205,9 @@ def indexed_semantic_kernel(tmp_path: Path) -> Generator[dict[str, object], None
         set_code_intel_kernel(None)
 
 
-def test_document_symbols_returns_symbols_from_index_path(indexed_semantic_kernel: dict[str, object]) -> None:
+def test_document_symbols_returns_symbols_from_index_path(
+    indexed_semantic_kernel: dict[str, object],
+) -> None:
     source_path = cast(str, indexed_semantic_kernel["path"])
 
     data = _data(
@@ -207,7 +216,9 @@ def test_document_symbols_returns_symbols_from_index_path(indexed_semantic_kerne
                 code_semantic,
                 {
                     "operation": "document_symbols",
-                    "target": {"anchor": {"path": source_path, "symbol_name": "Service"}},
+                    "target": {
+                        "anchor": {"path": source_path, "symbol_name": "Service"}
+                    },
                     "max_results": 10,
                 },
             )
@@ -219,23 +230,35 @@ def test_document_symbols_returns_symbols_from_index_path(indexed_semantic_kerne
     assert [symbol["name"] for symbol in symbols] == ["Service", "run", "helper"]
 
 
-def test_document_symbols_resolves_symbol_id_to_index_path(indexed_semantic_kernel: dict[str, object]) -> None:
+def test_document_symbols_resolves_symbol_id_to_index_path(
+    indexed_semantic_kernel: dict[str, object],
+) -> None:
     run = cast(Symbol, indexed_semantic_kernel["run"])
 
     data = _data(
         _run(
             _ainvoke_text(
                 code_semantic,
-                {"operation": "document_symbols", "target": {"symbol_id": run.id}, "max_results": 10},
+                {
+                    "operation": "document_symbols",
+                    "target": {"symbol_id": run.id},
+                    "max_results": 10,
+                },
             )
         )
     )
     symbols = cast(list[dict[str, object]], data["document_symbols"])
 
-    assert [symbol["qualified_name"] for symbol in symbols] == ["Service", "Service.run", "helper"]
+    assert [symbol["qualified_name"] for symbol in symbols] == [
+        "Service",
+        "Service.run",
+        "helper",
+    ]
 
 
-def test_document_symbols_respects_result_limit(indexed_semantic_kernel: dict[str, object]) -> None:
+def test_document_symbols_respects_result_limit(
+    indexed_semantic_kernel: dict[str, object],
+) -> None:
     source_path = cast(str, indexed_semantic_kernel["path"])
     raw = _run(
         _ainvoke_text(
@@ -346,10 +369,16 @@ def test_references_resolution_failure_does_not_dispatch_provider(
     assert provider.targets == []
 
 
-def test_definition_without_lsp_provider_returns_provider_unavailable(indexed_semantic_kernel: dict[str, object]) -> None:
+def test_definition_without_lsp_provider_returns_provider_unavailable(
+    indexed_semantic_kernel: dict[str, object],
+) -> None:
     run = cast(Symbol, indexed_semantic_kernel["run"])
 
-    raw = _run(_ainvoke_text(code_semantic, {"operation": "definition", "target": {"symbol_id": run.id}}))
+    raw = _run(
+        _ainvoke_text(
+            code_semantic, {"operation": "definition", "target": {"symbol_id": run.id}}
+        )
+    )
     payload = _payload(raw)
     error = cast(dict[str, object], payload["error"])
 

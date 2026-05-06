@@ -13,11 +13,23 @@ from langchain_core.tools import BaseTool
 class _AsyncInvokableTool(Protocol):
     def ainvoke(self, input: dict[str, object]) -> Awaitable[object]: ...
 
+
 import pytest
 
 from src.code_intel import CodeIntelKernel
-from src.code_intel.providers.fake import PYTHON_FAKE_PATH, create_fake_providers, fake_symbols
-from src.code_intel.core import Capability, ConfidenceClass, Diagnostic, ProviderHealth, ProviderStatus, ProviderUnavailable
+from src.code_intel.providers.fake import (
+    PYTHON_FAKE_PATH,
+    create_fake_providers,
+    fake_symbols,
+)
+from src.code_intel.core import (
+    Capability,
+    ConfidenceClass,
+    Diagnostic,
+    ProviderHealth,
+    ProviderStatus,
+    ProviderUnavailable,
+)
 from src.code_intel.verifier import clear_baseline_cache
 from src.code_intel.tools import (
     code_context,
@@ -27,6 +39,7 @@ from src.code_intel.tools import (
     code_verify,
     set_code_intel_kernel,
 )
+from src.code_intel.tools._langchain import strip_legacy_error_prefix
 
 T = TypeVar("T")
 
@@ -41,7 +54,7 @@ async def _ainvoke_text(item: BaseTool, args: dict[str, object]) -> str:
 
 
 def _payload(raw: str) -> dict[str, object]:
-    return cast(dict[str, object], json.loads(raw))
+    return cast(dict[str, object], json.loads(strip_legacy_error_prefix(raw)))
 
 
 def _data(raw: str) -> dict[str, object]:
@@ -72,22 +85,41 @@ def test_default_kernel_remains_provider_free_until_explicitly_injected() -> Non
 
 
 def test_code_search_symbol_text_and_mixed_modes_return_tool_result_json() -> None:
-    symbol_data = _data(_run(_ainvoke_text(code_search, {"query": "fake", "mode": "symbol", "limit": 10})))
-    text_data = _data(_run(_ainvoke_text(code_search, {"query": "fake", "mode": "text", "limit": 10})))
-    mixed_data = _data(_run(_ainvoke_text(code_search, {"query": "fake", "mode": "mixed", "limit": 10})))
+    symbol_data = _data(
+        _run(
+            _ainvoke_text(code_search, {"query": "fake", "mode": "symbol", "limit": 10})
+        )
+    )
+    text_data = _data(
+        _run(_ainvoke_text(code_search, {"query": "fake", "mode": "text", "limit": 10}))
+    )
+    mixed_data = _data(
+        _run(
+            _ainvoke_text(code_search, {"query": "fake", "mode": "mixed", "limit": 10})
+        )
+    )
 
     symbol_matches = cast(list[dict[str, object]], symbol_data["matches"])
     text_matches = cast(list[dict[str, object]], text_data["matches"])
     mixed_matches = cast(list[dict[str, object]], mixed_data["matches"])
 
-    assert [match["name"] for match in symbol_matches] == ["FakeService", "run", "fakeClient"]
+    assert [match["name"] for match in symbol_matches] == [
+        "FakeService",
+        "run",
+        "fakeClient",
+    ]
     assert {match["kind"] for match in text_matches} == {"text"}
     assert len(mixed_matches) >= len(symbol_matches)
-    assert all(isinstance(match["snippet"], str) and match["snippet"] for match in mixed_matches)
+    assert all(
+        isinstance(match["snippet"], str) and match["snippet"]
+        for match in mixed_matches
+    )
 
 
 def test_code_outline_returns_file_symbols_and_stable_line_count_estimate() -> None:
-    data = _data(_run(_ainvoke_text(code_outline, {"path": PYTHON_FAKE_PATH, "max_depth": 3})))
+    data = _data(
+        _run(_ainvoke_text(code_outline, {"path": PYTHON_FAKE_PATH, "max_depth": 3}))
+    )
     symbols = cast(list[dict[str, object]], data["symbols"])
 
     assert data["path"] == PYTHON_FAKE_PATH
@@ -97,16 +129,27 @@ def test_code_outline_returns_file_symbols_and_stable_line_count_estimate() -> N
 
 
 def test_code_context_accepts_dict_target_and_include_aliases() -> None:
-    run_symbol = next(symbol for symbol in fake_symbols() if symbol.qualified_name == "FakeService.run")
+    run_symbol = next(
+        symbol
+        for symbol in fake_symbols()
+        if symbol.qualified_name == "FakeService.run"
+    )
 
     data = _data(
         _run(
-            _ainvoke_text(code_context, 
+            _ainvoke_text(
+                code_context,
                 {
                     "target": {"symbol_id": run_symbol.id},
-                    "include": ["signature", "body", "parents", "imports", "nearby_symbols"],
+                    "include": [
+                        "signature",
+                        "body",
+                        "parents",
+                        "imports",
+                        "nearby_symbols",
+                    ],
                     "max_tokens": 256,
-                }
+                },
             )
         )
     )
@@ -125,15 +168,46 @@ def test_code_context_accepts_dict_target_and_include_aliases() -> None:
 
 
 def test_code_semantic_routes_operations_and_groups_references_by_file() -> None:
-    run_symbol = next(symbol for symbol in fake_symbols() if symbol.qualified_name == "FakeService.run")
+    run_symbol = next(
+        symbol
+        for symbol in fake_symbols()
+        if symbol.qualified_name == "FakeService.run"
+    )
     symbol_target = {"symbol_id": run_symbol.id}
     file_target = {"anchor": {"path": PYTHON_FAKE_PATH, "symbol_name": "FakeService"}}
 
-    definition = _data(_run(_ainvoke_text(code_semantic, {"operation": "definition", "target": symbol_target})))
-    references = _data(_run(_ainvoke_text(code_semantic, {"operation": "references", "target": symbol_target})))
-    hover = _data(_run(_ainvoke_text(code_semantic, {"operation": "hover", "target": symbol_target})))
+    definition = _data(
+        _run(
+            _ainvoke_text(
+                code_semantic, {"operation": "definition", "target": symbol_target}
+            )
+        )
+    )
+    references = _data(
+        _run(
+            _ainvoke_text(
+                code_semantic, {"operation": "references", "target": symbol_target}
+            )
+        )
+    )
+    hover = _data(
+        _run(
+            _ainvoke_text(
+                code_semantic, {"operation": "hover", "target": symbol_target}
+            )
+        )
+    )
     document_symbols = _data(
-        _run(_ainvoke_text(code_semantic, {"operation": "document_symbols", "target": file_target, "max_results": 10}))
+        _run(
+            _ainvoke_text(
+                code_semantic,
+                {
+                    "operation": "document_symbols",
+                    "target": file_target,
+                    "max_results": 10,
+                },
+            )
+        )
     )
 
     definition_locations = cast(list[dict[str, object]], definition["locations"])
@@ -152,16 +226,19 @@ def test_code_semantic_routes_operations_and_groups_references_by_file() -> None
     assert [symbol["name"] for symbol in symbols] == ["FakeService", "run", "helper"]
 
 
-def test_code_verify_uses_diagnostics_for_explicit_paths_with_agent_call_source() -> None:
+def test_code_verify_uses_diagnostics_for_explicit_paths_with_agent_call_source() -> (
+    None
+):
     data = _data(
         _run(
-            _ainvoke_text(code_verify, 
+            _ainvoke_text(
+                code_verify,
                 {
                     "scope": "file",
                     "paths": [PYTHON_FAKE_PATH],
                     "checks": ["lsp_diagnostics", "tests", "lint"],
                     "baseline": True,
-                }
+                },
             )
         )
     )
@@ -192,6 +269,7 @@ def test_code_verify_provider_unavailable_returns_structured_partial() -> None:
     We inject a kernel whose provider supports DIAGNOSTICS but raises
     ProviderUnavailable when called, triggering the partial path in code_verify.
     """
+
     class _FailingFakeProvider:
         name: str = "failing_fake"
         capabilities: set[Capability] = {Capability.DIAGNOSTICS}
@@ -203,7 +281,9 @@ def test_code_verify_provider_unavailable_returns_structured_partial() -> None:
         async def health(self) -> ProviderHealth:
             return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
 
-        async def confidence_for(self, _capability: Capability, _language: str) -> ConfidenceClass:
+        async def confidence_for(
+            self, _capability: Capability, _language: str
+        ) -> ConfidenceClass:
             return ConfidenceClass.HIGH
 
         async def diagnostics(self, path: str) -> list[Diagnostic]:
@@ -213,7 +293,9 @@ def test_code_verify_provider_unavailable_returns_structured_partial() -> None:
     kernel_failing_diag = CodeIntelKernel((_FailingFakeProvider(),))
     set_code_intel_kernel(kernel_failing_diag)
 
-    raw = _run(_ainvoke_text(code_verify, {"scope": "file", "paths": [PYTHON_FAKE_PATH]}))
+    raw = _run(
+        _ainvoke_text(code_verify, {"scope": "file", "paths": [PYTHON_FAKE_PATH]})
+    )
     payload = _payload(raw)
 
     # Tool-level ok should be True (tool didn't crash)
