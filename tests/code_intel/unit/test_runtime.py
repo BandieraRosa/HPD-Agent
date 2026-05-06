@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+import sys
+from collections.abc import Coroutine, Sequence
 from pathlib import Path
 from typing import TypeVar
 
 import pytest
+from lsprotocol import types as lsp_types
 
 from src.code_intel import CodeIntelKernel
 from src.code_intel.config import CodeIntelConfig
+from src.code_intel.kernel import CodeIntelKernel as KernelClass
+from src.code_intel.providers.lsp.manager import LSPManager
 from src.code_intel.runtime import CodeIntelRuntime
 from src.code_intel.tools.runtime import get_code_intel_kernel, set_code_intel_kernel
 
@@ -32,17 +36,26 @@ def _config(tmp_path: Path, **overrides: object) -> CodeIntelConfig:
     return CodeIntelConfig.model_validate(data)
 
 
-def test_initialize_registers_static_providers_and_sets_global_kernel(
-    tmp_path: Path,
+def test_initialize_registers_static_and_lazy_lsp_providers_without_starting_lsp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime = CodeIntelRuntime(tmp_path, config=_config(tmp_path))
+    calls: list[str] = []
 
+    async def fail_ensure(self: LSPManager, language: str) -> object:
+        calls.append(language)
+        raise AssertionError("startup must not call ensure_client by default")
+
+    monkeypatch.setattr(LSPManager, "ensure_client", fail_ensure)
+
+    runtime = CodeIntelRuntime(tmp_path, config=_config(tmp_path))
     status = _run(runtime.initialize())
 
     assert status.initialized is True
+    assert calls == []
     assert [getattr(provider, "name", "") for provider in runtime.kernel.providers] == [
         "text_search",
         "tree_sitter",
+        "lsp",
     ]
     assert get_code_intel_kernel() is runtime.kernel
     _run(runtime.close())
@@ -109,3 +122,32 @@ def test_attach_symbol_index_reuses_kernel_instance(tmp_path: Path) -> None:
 
     assert returned is kernel
     assert kernel.target_resolver is not None
+
+
+def test_duplicate_lsp_start_does_not_duplicate_kernel_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_ensure(self: LSPManager, language: str) -> object:
+        spec = self.spec_for(language)
+        return type(
+            "Handle",
+            (),
+            {
+                "spec": spec,
+                "capabilities": lsp_types.ServerCapabilities(definition_provider=True),
+            },
+        )()
+
+    monkeypatch.setattr(LSPManager, "ensure_client", fake_ensure)
+    runtime = CodeIntelRuntime(tmp_path, config=_config(tmp_path))
+
+    async def scenario() -> None:
+        await runtime.initialize()
+        await runtime.start_lsp("python")
+        await runtime.start_lsp("python")
+        assert [
+            getattr(provider, "name", "") for provider in runtime.kernel.providers
+        ].count("lsp") == 1
+        await runtime.close()
+
+    _run(scenario())
