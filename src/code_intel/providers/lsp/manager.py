@@ -21,6 +21,7 @@ from .transport import LSPTransport
 LSPManagerKey = tuple[str, str, tuple[str, ...], str]
 _DEFAULT_IDLE_TIMEOUT_SECONDS = 600.0
 _DEFAULT_DETECT_TIMEOUT_SECONDS = 5.0
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 5.0
 
 
 class ManagedLSPClient(Protocol):
@@ -48,6 +49,8 @@ class LSPClientFactory(Protocol):
         spec: LanguageServerSpec,
         workspace_root: Path,
         command: Sequence[str],
+        *,
+        request_timeout_seconds: float,
     ) -> ManagedLSPClient: ...
 
 
@@ -76,8 +79,12 @@ def _default_client_factory(
     spec: LanguageServerSpec,
     workspace_root: Path,
     command: Sequence[str],
+    *,
+    request_timeout_seconds: float,
 ) -> ManagedLSPClient:
-    transport = LSPTransport(command, cwd=workspace_root)
+    transport = LSPTransport(
+        command, cwd=workspace_root, default_timeout=request_timeout_seconds
+    )
     return LSPClient(
         transport,
         workspace_root=workspace_root,
@@ -96,6 +103,7 @@ class LSPManager:
         specs: Iterable[LanguageServerSpec] | None = None,
         client_factory: LSPClientFactory | None = None,
         idle_timeout_seconds: float = _DEFAULT_IDLE_TIMEOUT_SECONDS,
+        request_timeout_seconds: float = _DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         self.workspace_root: Path = (
             Path(workspace_root).expanduser().resolve(strict=False)
@@ -105,7 +113,9 @@ class LSPManager:
             client_factory or _default_client_factory
         )
         self.idle_timeout_seconds: float = max(0.0, idle_timeout_seconds)
+        self.request_timeout_seconds: float = request_timeout_seconds
         self._handles: dict[LSPManagerKey, LSPServerHandle] = {}
+        self._startup_locks: dict[LSPManagerKey, asyncio.Lock] = {}
 
     @property
     def languages(self) -> set[str]:
@@ -145,36 +155,46 @@ class LSPManager:
             handle.touch()
             return handle
 
-        await self.detect_server(language)
+        lock = self._startup_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            handle = self._handles.get(key)
+            if handle is not None:
+                handle.touch()
+                return handle
 
-        client = self._client_factory(
-            spec, self.workspace_root, tuple(spec.launch_command)
-        )
-        started_at = time.monotonic()
-        try:
-            initialize_result = await client.initialize(
-                root_uri=self.workspace_root.as_uri(),
-                initialization_options=spec.init_options or None,
+            await self.detect_server(language)
+
+            client = self._client_factory(
+                spec,
+                self.workspace_root,
+                tuple(spec.launch_command),
+                request_timeout_seconds=self.request_timeout_seconds,
             )
-        except CodeIntelError:
-            await self._close_after_failed_start(client)
-            raise
-        except Exception:
-            await self._close_after_failed_start(client)
-            raise ProviderUnavailable("语言服务器初始化失败。") from None
+            started_at = time.monotonic()
+            try:
+                initialize_result = await client.initialize(
+                    root_uri=self.workspace_root.as_uri(),
+                    initialization_options=spec.init_options or None,
+                )
+            except CodeIntelError:
+                await self._close_after_failed_start(client)
+                raise
+            except Exception:
+                await self._close_after_failed_start(client)
+                raise ProviderUnavailable("语言服务器初始化失败。") from None
 
-        handle = LSPServerHandle(
-            key=key,
-            spec=spec,
-            client=client,
-            initialize_result=initialize_result,
-            capabilities=initialize_result.capabilities,
-            started_at=started_at,
-            last_used_at=started_at,
-            idle_timeout_seconds=self.idle_timeout_seconds,
-        )
-        self._handles[key] = handle
-        return handle
+            handle = LSPServerHandle(
+                key=key,
+                spec=spec,
+                client=client,
+                initialize_result=initialize_result,
+                capabilities=initialize_result.capabilities,
+                started_at=started_at,
+                last_used_at=started_at,
+                idle_timeout_seconds=self.idle_timeout_seconds,
+            )
+            self._handles[key] = handle
+            return handle
 
     async def capabilities_for(self, language: str) -> lsp_types.ServerCapabilities:
         """Return cached initialize capabilities, starting the server if needed."""

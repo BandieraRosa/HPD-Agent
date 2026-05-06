@@ -12,7 +12,11 @@ import pytest
 from lsprotocol import types as lsp_types
 
 from src.code_intel.core import ProviderUnavailable
-from src.code_intel.providers.lsp import LSPManager, LanguageServerSpec, default_language_server_specs
+from src.code_intel.providers.lsp import (
+    LSPManager,
+    LanguageServerSpec,
+    default_language_server_specs,
+)
 
 T = TypeVar("T")
 
@@ -22,8 +26,16 @@ def _run(coro: Coroutine[object, object, T]) -> T:
 
 
 class _FakeLifecycleClient:
-    def __init__(self, capabilities: lsp_types.ServerCapabilities | None = None) -> None:
-        self.capabilities: lsp_types.ServerCapabilities = capabilities or lsp_types.ServerCapabilities(definition_provider=True)
+    def __init__(
+        self,
+        capabilities: lsp_types.ServerCapabilities | None = None,
+        *,
+        initialize_delay: float = 0.0,
+    ) -> None:
+        self.capabilities: lsp_types.ServerCapabilities = (
+            capabilities or lsp_types.ServerCapabilities(definition_provider=True)
+        )
+        self.initialize_delay: float = initialize_delay
         self.initialize_calls: int = 0
         self.shutdown_calls: int = 0
         self.close_calls: int = 0
@@ -38,6 +50,8 @@ class _FakeLifecycleClient:
         self.initialize_calls += 1
         _ = initialization_options
         assert root_uri is not None
+        if self.initialize_delay > 0:
+            await asyncio.sleep(self.initialize_delay)
         return lsp_types.InitializeResult(capabilities=self.capabilities)
 
     async def shutdown(self) -> None:
@@ -51,26 +65,33 @@ class _FakeLifecycleClient:
 
 
 class _RecordingFactory:
-    def __init__(self) -> None:
+    def __init__(self, *, initialize_delay: float = 0.0) -> None:
+        self.initialize_delay: float = initialize_delay
         self.clients: list[_FakeLifecycleClient] = []
         self.commands: list[tuple[str, ...]] = []
         self.languages: list[str] = []
+        self.request_timeouts: list[float] = []
 
     def __call__(
         self,
         spec: LanguageServerSpec,
         workspace_root: Path,
         command: Sequence[str],
+        *,
+        request_timeout_seconds: float,
     ) -> _FakeLifecycleClient:
         assert workspace_root.is_absolute()
         self.commands.append(tuple(command))
         self.languages.append(spec.language)
-        client = _FakeLifecycleClient()
+        self.request_timeouts.append(request_timeout_seconds)
+        client = _FakeLifecycleClient(initialize_delay=self.initialize_delay)
         self.clients.append(client)
         return client
 
 
-def _spec(language: str = "python", *, init_options: dict[str, object] | None = None) -> LanguageServerSpec:
+def _spec(
+    language: str = "python", *, init_options: dict[str, object] | None = None
+) -> LanguageServerSpec:
     return LanguageServerSpec(
         language=language,
         name=f"mock-{language}",
@@ -88,11 +109,19 @@ def test_default_registry_specs_include_exact_install_hints() -> None:
     assert specs["python"].detect_command == ["pyright", "--version"]
     assert specs["python"].launch_command == ["pyright-langserver", "--stdio"]
     assert specs["python"].install_hint == "npm i -g pyright"
-    assert specs["typescript"].install_hint == "npm i -g typescript-language-server typescript"
-    assert specs["javascript"].install_hint == "npm i -g typescript-language-server typescript"
+    assert (
+        specs["typescript"].install_hint
+        == "npm i -g typescript-language-server typescript"
+    )
+    assert (
+        specs["javascript"].install_hint
+        == "npm i -g typescript-language-server typescript"
+    )
 
 
-def test_manager_lazy_starts_once_and_keys_by_workspace_language_command_and_options(tmp_path: Path) -> None:
+def test_manager_lazy_starts_once_and_keys_by_workspace_language_command_and_options(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         factory = _RecordingFactory()
         spec = _spec(init_options={"analysis": {"strict": True}})
@@ -117,7 +146,46 @@ def test_manager_lazy_starts_once_and_keys_by_workspace_language_command_and_opt
     _run(scenario())
 
 
-def test_missing_executable_is_nonfatal_and_reports_chinese_install_hint(tmp_path: Path) -> None:
+def test_manager_threads_request_timeout_to_custom_factory(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        factory = _RecordingFactory()
+        manager = LSPManager(
+            tmp_path,
+            specs=[_spec()],
+            client_factory=factory,
+            request_timeout_seconds=1.25,
+        )
+
+        _ = await manager.ensure_client("python")
+
+        assert manager.request_timeout_seconds == 1.25
+        assert factory.request_timeouts == [1.25]
+
+    _run(scenario())
+
+
+def test_concurrent_ensure_client_starts_one_client(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        factory = _RecordingFactory(initialize_delay=0.02)
+        manager = LSPManager(tmp_path, specs=[_spec()], client_factory=factory)
+
+        handles = await asyncio.gather(
+            manager.ensure_client("python"),
+            manager.ensure_client("python"),
+            manager.ensure_client("python"),
+        )
+
+        assert handles[0] is handles[1] is handles[2]
+        assert len(factory.clients) == 1
+        assert factory.clients[0].initialize_calls == 1
+        assert len(manager.handles) == 1
+
+    _run(scenario())
+
+
+def test_missing_executable_is_nonfatal_and_reports_chinese_install_hint(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         factory = _RecordingFactory()
         spec = LanguageServerSpec(
@@ -140,9 +208,9 @@ def test_missing_executable_is_nonfatal_and_reports_chinese_install_hint(tmp_pat
     _run(scenario())
 
 
-
-
-def test_manager_check_health_reports_stopped_initialized_client(tmp_path: Path) -> None:
+def test_manager_check_health_reports_stopped_initialized_client(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         factory = _RecordingFactory()
         manager = LSPManager(tmp_path, specs=[_spec()], client_factory=factory)
@@ -155,7 +223,10 @@ def test_manager_check_health_reports_stopped_initialized_client(tmp_path: Path)
 
     _run(scenario())
 
-def test_detect_command_executes_full_command_before_starting_client(tmp_path: Path) -> None:
+
+def test_detect_command_executes_full_command_before_starting_client(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         factory = _RecordingFactory()
         marker = tmp_path / "detect-ran.txt"
@@ -182,7 +253,9 @@ def test_detect_command_executes_full_command_before_starting_client(tmp_path: P
     _run(scenario())
 
 
-def test_detect_command_nonzero_is_nonfatal_and_reports_install_hint(tmp_path: Path) -> None:
+def test_detect_command_nonzero_is_nonfatal_and_reports_install_hint(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         factory = _RecordingFactory()
         spec = LanguageServerSpec(
@@ -204,10 +277,13 @@ def test_detect_command_nonzero_is_nonfatal_and_reports_install_hint(tmp_path: P
 
     _run(scenario())
 
+
 def test_restart_and_idle_shutdown_are_explicit_hooks(tmp_path: Path) -> None:
     async def scenario() -> None:
         factory = _RecordingFactory()
-        manager = LSPManager(tmp_path, specs=[_spec()], client_factory=factory, idle_timeout_seconds=0.5)
+        manager = LSPManager(
+            tmp_path, specs=[_spec()], client_factory=factory, idle_timeout_seconds=0.5
+        )
 
         first = await manager.ensure_client("python")
         restarted = await manager.restart("python")

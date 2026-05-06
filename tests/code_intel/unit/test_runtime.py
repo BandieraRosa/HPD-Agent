@@ -100,6 +100,18 @@ def test_no_background_index_when_database_exists(tmp_path: Path) -> None:
     _run(runtime.close())
 
 
+def test_lsp_request_timeout_config_is_passed_to_manager(tmp_path: Path) -> None:
+    config = _config(tmp_path, lsp={"request_timeout_ms": 1234})
+    runtime = CodeIntelRuntime(tmp_path, config=config)
+
+    status = _run(runtime.initialize())
+
+    assert status.lsp_provider_registered is True
+    assert runtime.lsp_manager is not None
+    assert runtime.lsp_manager.request_timeout_seconds == 1.234
+    _run(runtime.close())
+
+
 def test_kernel_provider_registration_is_idempotent_by_provider_name() -> None:
     class Provider:
         name = "duplicate"

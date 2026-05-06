@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
+import stat
 from collections.abc import Awaitable, Iterable
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Protocol, TypeVar, cast
+from typing import Protocol, TypeVar, cast, runtime_checkable
 
 from lsprotocol import types as lsp_types
 
@@ -49,12 +52,42 @@ _ROUTED_CAPABILITIES = {
     Capability.DIAGNOSTICS,
     Capability.DOCUMENT_SYMBOLS,
 }
+_NO_ROUTED_CAPABILITIES_MESSAGE = "语言服务器未提供可用的代码智能能力。"
+_DIAGNOSTICS_READ_FAILURE_MESSAGE = "无法读取文件，无法同步 LSP 诊断。"
+_DEFAULT_MAX_SYNC_FILE_SIZE_BYTES = 1_000_000
 
 
 class _HealthState(str, Enum):
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
     PERMANENTLY_UNHEALTHY = "permanently_unhealthy"
+
+
+@runtime_checkable
+class _DiagnosticsWaitClient(Protocol):
+    def diagnostics_version(self, path: str) -> int: ...
+
+    async def wait_for_diagnostics(
+        self,
+        path: str,
+        *,
+        timeout: float,
+        after_version: int | None = None,
+        document_version: int | None = None,
+    ) -> bool: ...
+
+
+@dataclass(frozen=True)
+class _DocumentSnapshot:
+    resolved_path: Path
+    mtime_ns: int
+    size: int
+
+
+@dataclass(frozen=True)
+class _WorkspaceDocument:
+    content: str
+    snapshot: _DocumentSnapshot
 
 
 class _ProviderLSPClient(Protocol):
@@ -101,6 +134,7 @@ class LSPProvider:
         specs: Iterable[LanguageServerSpec] | None = None,
         name: str = "lsp",
         languages: set[str] | None = None,
+        max_sync_file_size_bytes: int = _DEFAULT_MAX_SYNC_FILE_SIZE_BYTES,
     ) -> None:
         self.name: str = name
         self.manager: LSPManager = manager or LSPManager(workspace_root, specs=specs)
@@ -112,7 +146,10 @@ class LSPProvider:
         self._restart_failures: dict[str, int] = {}
         self._diagnostics_cache: dict[str, list[Diagnostic]] = {}
         self._document_versions: dict[str, int] = {}
+        self._document_snapshots: dict[str, _DocumentSnapshot] = {}
+        self._document_locks: dict[str, asyncio.Lock] = {}
         self._open_documents: set[str] = set()
+        self.max_sync_file_size_bytes: int = max(1, max_sync_file_size_bytes)
         self._language_context: contextvars.ContextVar[str | None] = (
             contextvars.ContextVar(
                 f"lsp_provider_language_{id(self)}",
@@ -224,50 +261,84 @@ class LSPProvider:
         relative_path = self._validate_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
-        client = await self._client_for_language(language, Capability.DIAGNOSTICS)
-        diagnostics = await self._with_unhealthy_on_unavailable(
-            language, client.diagnostics(relative_path)
-        )
-        self._diagnostics_cache[relative_path] = diagnostics
-        return list(diagnostics)
+        async with self._document_lock(relative_path):
+            document = await self._read_workspace_document(relative_path)
+            client = await self._client_for_language(language, Capability.DIAGNOSTICS)
+            after_version = self._diagnostics_version(client, relative_path)
+            if relative_path not in self._open_documents:
+                document_version = await self._did_open_with_client(
+                    language, client, relative_path, document.content
+                )
+                self._document_snapshots[relative_path] = document.snapshot
+                await self._wait_for_diagnostics_snapshot(
+                    client,
+                    relative_path,
+                    after_version=after_version,
+                    document_version=document_version,
+                )
+            elif self._document_snapshots.get(relative_path) != document.snapshot:
+                document_version = await self._did_change_with_client(
+                    language, client, relative_path, document.content
+                )
+                self._document_snapshots[relative_path] = document.snapshot
+                await self._wait_for_diagnostics_snapshot(
+                    client,
+                    relative_path,
+                    after_version=after_version,
+                    document_version=document_version,
+                )
+            diagnostics = await self._with_unhealthy_on_unavailable(
+                language, client.diagnostics(relative_path)
+            )
+            self._diagnostics_cache[relative_path] = diagnostics
+            return list(diagnostics)
 
     async def notify_did_open(self, path: str, content: str) -> None:
         relative_path = self._validate_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
-        client = await self._client_for_language(language, Capability.DIAGNOSTICS)
-        version = self._next_document_version(relative_path)
-        await self._with_unhealthy_on_unavailable(
-            language,
-            client.did_open(
-                relative_path, language_id=language, text=content, version=version
-            ),
-        )
-        self._open_documents.add(relative_path)
+        async with self._document_lock(relative_path):
+            client = await self._client_for_language(language, Capability.DIAGNOSTICS)
+            await self._did_open_with_client(language, client, relative_path, content)
+            snapshot = await self._try_workspace_document_snapshot(relative_path)
+            if snapshot is not None:
+                self._document_snapshots[relative_path] = snapshot
 
     async def notify_did_change(self, path: str, new_content: str) -> None:
         relative_path = self._validate_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
-        if relative_path not in self._open_documents:
-            await self.notify_did_open(relative_path, new_content)
-        client = await self._client_for_language(language, Capability.DIAGNOSTICS)
-        version = self._next_document_version(relative_path)
-        await self._with_unhealthy_on_unavailable(
-            language,
-            client.did_change(relative_path, text=new_content, version=version),
-        )
+        async with self._document_lock(relative_path):
+            client = await self._client_for_language(language, Capability.DIAGNOSTICS)
+            if relative_path not in self._open_documents:
+                await self._did_open_with_client(
+                    language, client, relative_path, new_content
+                )
+            await self._did_change_with_client(
+                language, client, relative_path, new_content
+            )
+            snapshot = await self._try_workspace_document_snapshot(relative_path)
+            if snapshot is not None:
+                self._document_snapshots[relative_path] = snapshot
+            else:
+                _ = self._document_snapshots.pop(relative_path, None)
 
     async def notify_did_save(self, path: str, content: str | None = None) -> None:
         relative_path = self._validate_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
-        if relative_path not in self._open_documents and content is not None:
-            await self.notify_did_open(relative_path, content)
-        client = await self._client_for_language(language, Capability.DIAGNOSTICS)
-        await self._with_unhealthy_on_unavailable(
-            language, client.did_save(relative_path, text=content)
-        )
+        async with self._document_lock(relative_path):
+            client = await self._client_for_language(language, Capability.DIAGNOSTICS)
+            if relative_path not in self._open_documents and content is not None:
+                await self._did_open_with_client(
+                    language, client, relative_path, content
+                )
+                snapshot = await self._try_workspace_document_snapshot(relative_path)
+                if snapshot is not None:
+                    self._document_snapshots[relative_path] = snapshot
+            await self._with_unhealthy_on_unavailable(
+                language, client.did_save(relative_path, text=content)
+            )
 
     async def restart(self, language: str) -> ProviderHealth:
         """Explicit restart hook; a successful restart clears permanent unhealthy state."""
@@ -278,6 +349,7 @@ class LSPProvider:
                 health_score=0.0,
                 message=f"unsupported language: {language}",
             )
+        self._forget_documents_for_language(language)
         try:
             handle = await self.manager.restart(language)
         except ProviderUnavailable as error:
@@ -288,7 +360,9 @@ class LSPProvider:
                 language, ProviderUnavailable("语言服务器重启失败。")
             )
             return self._health_for_language(language)
-        _ = self._record_capabilities(language, handle.capabilities)
+        capabilities = self._record_capabilities(language, handle.capabilities)
+        if not capabilities:
+            return self._health_for_language(language)
         self._health_states[language] = _HealthState.HEALTHY
         _ = self._health_messages.pop(language, None)
         self._restart_failures[language] = 0
@@ -316,6 +390,16 @@ class LSPProvider:
                 language, ProviderUnavailable("language server is not running")
             )
             return self._health_for_language(language)
+        handle = self._initialized_handle_for_language(language)
+        if handle is not None:
+            capabilities = self._capabilities_by_language.get(language)
+            if capabilities is None:
+                capabilities = self._record_capabilities(language, handle.capabilities)
+            if not capabilities:
+                self._mark_unhealthy(
+                    language, ProviderUnavailable(_NO_ROUTED_CAPABILITIES_MESSAGE)
+                )
+                return self._health_for_language(language)
         self._health_states[language] = _HealthState.HEALTHY
         _ = self._health_messages.pop(language, None)
         return self._health_for_language(language)
@@ -326,14 +410,10 @@ class LSPProvider:
         if language is None:
             self._open_documents.clear()
             self._document_versions.clear()
+            self._document_snapshots.clear()
             self._diagnostics_cache.clear()
             return
-        for path in [
-            path
-            for path in self._open_documents
-            if self._language_for_path(path) == language
-        ]:
-            self._open_documents.discard(path)
+        self._forget_documents_for_language(language)
 
     async def _client_for_language(
         self, language: str, capability: Capability
@@ -361,9 +441,16 @@ class LSPProvider:
             and self._health_states.get(language, _HealthState.HEALTHY)
             == _HealthState.HEALTHY
         ):
+            if not cached:
+                error = ProviderUnavailable(_NO_ROUTED_CAPABILITIES_MESSAGE)
+                self._mark_unhealthy(language, error)
+                raise error
             return cached
         handle = await self._ensure_handle(language)
-        return self._record_capabilities(language, handle.capabilities)
+        capabilities = self._record_capabilities(language, handle.capabilities)
+        if not capabilities:
+            raise ProviderUnavailable(_NO_ROUTED_CAPABILITIES_MESSAGE)
+        return capabilities
 
     async def _ensure_handle(self, language: str) -> LSPServerHandle:
         try:
@@ -391,6 +478,140 @@ class LSPProvider:
         except LSPTimeout:
             raise
 
+    async def _did_open_with_client(
+        self,
+        language: str,
+        client: _ProviderLSPClient,
+        relative_path: str,
+        content: str,
+    ) -> int:
+        version = self._next_document_version(relative_path)
+        await self._with_unhealthy_on_unavailable(
+            language,
+            client.did_open(
+                relative_path, language_id=language, text=content, version=version
+            ),
+        )
+        self._open_documents.add(relative_path)
+        return version
+
+    async def _did_change_with_client(
+        self,
+        language: str,
+        client: _ProviderLSPClient,
+        relative_path: str,
+        content: str,
+    ) -> int:
+        version = self._next_document_version(relative_path)
+        await self._with_unhealthy_on_unavailable(
+            language, client.did_change(relative_path, text=content, version=version)
+        )
+        return version
+
+    def _diagnostics_version(
+        self, client: _ProviderLSPClient, relative_path: str
+    ) -> int | None:
+        if not isinstance(client, _DiagnosticsWaitClient):
+            return None
+        return client.diagnostics_version(relative_path)
+
+    async def _wait_for_diagnostics_snapshot(
+        self,
+        client: _ProviderLSPClient,
+        relative_path: str,
+        *,
+        after_version: int | None,
+        document_version: int,
+    ) -> None:
+        if not isinstance(client, _DiagnosticsWaitClient):
+            return
+        timeout = max(0.0, self.manager.request_timeout_seconds)
+        refreshed = await client.wait_for_diagnostics(
+            relative_path,
+            timeout=timeout,
+            after_version=after_version,
+            document_version=document_version,
+        )
+        if not refreshed:
+            raise LSPTimeout("LSP diagnostics did not refresh before timeout")
+
+    async def _read_workspace_document(self, relative_path: str) -> _WorkspaceDocument:
+        try:
+            return await asyncio.to_thread(
+                self._read_workspace_document_sync, relative_path
+            )
+        except ProviderUnavailable:
+            raise
+        except Exception:
+            raise ProviderUnavailable(_DIAGNOSTICS_READ_FAILURE_MESSAGE) from None
+
+    def _read_workspace_document_sync(self, relative_path: str) -> _WorkspaceDocument:
+        try:
+            root = self.manager.workspace_root.resolve(strict=False)
+            resolved_path = (self.manager.workspace_root / relative_path).resolve(
+                strict=True
+            )
+            _ = resolved_path.relative_to(root)
+            file_stat = resolved_path.stat()
+        except (OSError, ValueError):
+            raise ProviderUnavailable(_DIAGNOSTICS_READ_FAILURE_MESSAGE) from None
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ProviderUnavailable(_DIAGNOSTICS_READ_FAILURE_MESSAGE) from None
+        if file_stat.st_size > self.max_sync_file_size_bytes:
+            raise ProviderUnavailable(_DIAGNOSTICS_READ_FAILURE_MESSAGE) from None
+        try:
+            with resolved_path.open("rb") as handle:
+                raw = handle.read(self.max_sync_file_size_bytes + 1)
+            if len(raw) > self.max_sync_file_size_bytes:
+                raise ProviderUnavailable(_DIAGNOSTICS_READ_FAILURE_MESSAGE)
+            content = raw.decode("utf-8")
+            file_stat = resolved_path.stat()
+        except (OSError, UnicodeError):
+            raise ProviderUnavailable(_DIAGNOSTICS_READ_FAILURE_MESSAGE) from None
+        if file_stat.st_size > self.max_sync_file_size_bytes:
+            raise ProviderUnavailable(_DIAGNOSTICS_READ_FAILURE_MESSAGE) from None
+        return _WorkspaceDocument(
+            content=content,
+            snapshot=_DocumentSnapshot(
+                resolved_path=resolved_path,
+                mtime_ns=file_stat.st_mtime_ns,
+                size=file_stat.st_size,
+            ),
+        )
+
+    async def _try_workspace_document_snapshot(
+        self, relative_path: str
+    ) -> _DocumentSnapshot | None:
+        try:
+            document = await self._read_workspace_document(relative_path)
+        except ProviderUnavailable:
+            return None
+        return document.snapshot
+
+    def _document_lock(self, relative_path: str) -> asyncio.Lock:
+        return self._document_locks.setdefault(relative_path, asyncio.Lock())
+
+    def _initialized_handle_for_language(self, language: str) -> LSPServerHandle | None:
+        for handle in self.manager.handles:
+            if handle.spec.language == language:
+                return handle
+        return None
+
+    def _forget_documents_for_language(self, language: str) -> None:
+        tracked_paths = (
+            set(self._open_documents)
+            | set(self._document_versions)
+            | set(self._document_snapshots)
+            | set(self._diagnostics_cache)
+        )
+        for tracked_path in tracked_paths:
+            if self._language_for_path(tracked_path) != language:
+                continue
+            self._open_documents.discard(tracked_path)
+            _ = self._document_versions.pop(tracked_path, None)
+            _ = self._document_snapshots.pop(tracked_path, None)
+            _ = self._diagnostics_cache.pop(tracked_path, None)
+
     def _record_capabilities(
         self, language: str, server_capabilities: lsp_types.ServerCapabilities
     ) -> set[Capability]:
@@ -401,6 +622,10 @@ class LSPProvider:
             if self._capabilities_by_language
             else set()
         )
+        if not capabilities:
+            self._mark_unhealthy(
+                language, ProviderUnavailable(_NO_ROUTED_CAPABILITIES_MESSAGE)
+            )
         return capabilities
 
     def _mark_unhealthy(self, language: str, error: ProviderUnavailable) -> None:
