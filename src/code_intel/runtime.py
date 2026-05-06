@@ -271,12 +271,14 @@ class CodeIntelRuntime:
             self.lsp_manager = LSPManager(
                 self.workspace_root,
                 idle_timeout_seconds=self.config.lsp.idle_shutdown_minutes * 60.0,
+                request_timeout_seconds=self.config.lsp.request_timeout_ms / 1000.0,
             )
         if self.lsp_provider is None:
             self.lsp_provider = LSPProvider(
                 self.workspace_root,
                 manager=self.lsp_manager,
                 languages=set(self.config.lsp.languages),
+                max_sync_file_size_bytes=self.config.index.max_file_size_bytes,
             )
         self.kernel.register_provider(self.lsp_provider)
         self.status.lsp_provider_registered = True

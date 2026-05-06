@@ -11,12 +11,19 @@ from typing import TypeVar
 import pytest
 from lsprotocol import types as lsp_types
 
-from src.code_intel.core import Diagnostic, DiagnosticSeverity, LSPTimeout, ProviderUnavailable, Symbol, SymbolKind
+from src.code_intel.core import (
+    Diagnostic,
+    DiagnosticSeverity,
+    LSPTimeout,
+    ProviderUnavailable,
+    Symbol,
+    SymbolKind,
+)
 from src.code_intel.providers.lsp import LSPClient, LSPTransport
 
 T = TypeVar("T")
 
-_MOCK_CLIENT_SERVER = r'''
+_MOCK_CLIENT_SERVER = r"""
 from __future__ import annotations
 
 import json
@@ -63,22 +70,26 @@ def initialize_result():
     }
 
 
-def diagnostic_notification(root):
+def diagnostic_notification(root, empty=False, version=None, message="bad value"):
+    diagnostics = [] if empty else [
+        {
+            "range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 9}},
+            "severity": 1,
+            "code": "E001",
+            "source": "mock-lsp",
+            "message": message,
+        }
+    ]
+    params = {
+        "uri": file_uri(root, "src/mock.py"),
+        "diagnostics": diagnostics,
+    }
+    if version is not None:
+        params["version"] = version
     return {
         "jsonrpc": "2.0",
         "method": "textDocument/publishDiagnostics",
-        "params": {
-            "uri": file_uri(root, "src/mock.py"),
-            "diagnostics": [
-                {
-                    "range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 9}},
-                    "severity": 1,
-                    "code": "E001",
-                    "source": "mock-lsp",
-                    "message": "bad value",
-                }
-            ],
-        },
+        "params": params,
     }
 
 
@@ -122,10 +133,24 @@ def main():
             continue
         if method == "initialize":
             write_message({"jsonrpc": "2.0", "id": message["id"], "result": initialize_result()})
-            write_message(diagnostic_notification(root))
+            write_message(diagnostic_notification(root, empty=mode == "empty_diagnostics"))
             continue
         if method == "textDocument/documentSymbol":
             write_message({"jsonrpc": "2.0", "id": message["id"], "result": document_symbols()})
+            continue
+        if method == "textDocument/didChange":
+            document_version = message.get("params", {}).get("textDocument", {}).get("version")
+            publish_version = document_version
+            if mode == "stale_diagnostics" and isinstance(document_version, int):
+                publish_version = document_version - 1
+            write_message(
+                diagnostic_notification(
+                    root,
+                    empty=mode == "empty_diagnostics",
+                    version=publish_version,
+                    message=f"version {publish_version}",
+                )
+            )
             continue
         if method == "initialized":
             continue
@@ -133,7 +158,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-'''
+"""
 
 
 def _run(coro: Coroutine[object, object, T]) -> T:
@@ -144,7 +169,10 @@ def _write_workspace(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
     source = workspace / "src/mock.py"
     source.parent.mkdir(parents=True, exist_ok=True)
-    _ = source.write_text("class MockService:\n    def run(self):\n        bad\n\ndef helper():\n    pass\n", encoding="utf-8")
+    _ = source.write_text(
+        "class MockService:\n    def run(self):\n        bad\n\ndef helper():\n    pass\n",
+        encoding="utf-8",
+    )
     return workspace
 
 
@@ -166,8 +194,12 @@ async def _wait_for_diagnostics(client: LSPClient, path: str) -> list[Diagnostic
 def test_mock_lsp_initialize_and_publish_diagnostics(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = _write_workspace(tmp_path)
-        transport = LSPTransport(_server_command(tmp_path, "normal", workspace), default_timeout=1.0)
-        client = LSPClient(transport, workspace_root=workspace, language="python", source="mock_lsp")
+        transport = LSPTransport(
+            _server_command(tmp_path, "normal", workspace), default_timeout=1.0
+        )
+        client = LSPClient(
+            transport, workspace_root=workspace, language="python", source="mock_lsp"
+        )
         try:
             initialize_result = await client.initialize()
             diagnostics = await _wait_for_diagnostics(client, "src/mock.py")
@@ -186,11 +218,103 @@ def test_mock_lsp_initialize_and_publish_diagnostics(tmp_path: Path) -> None:
     _run(scenario())
 
 
+def test_wait_for_diagnostics_treats_empty_publish_as_snapshot(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        workspace = _write_workspace(tmp_path)
+        transport = LSPTransport(
+            _server_command(tmp_path, "empty_diagnostics", workspace),
+            default_timeout=1.0,
+        )
+        client = LSPClient(
+            transport, workspace_root=workspace, language="python", source="mock_lsp"
+        )
+        try:
+            _ = await client.initialize()
+            ready = await client.wait_for_diagnostics("src/mock.py", timeout=1.0)
+            diagnostics = await client.diagnostics("src/mock.py")
+        finally:
+            await client.close()
+
+        assert ready is True
+        assert diagnostics == []
+
+    _run(scenario())
+
+
+def test_wait_for_diagnostics_can_wait_for_next_snapshot(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        workspace = _write_workspace(tmp_path)
+        transport = LSPTransport(
+            _server_command(tmp_path, "normal", workspace), default_timeout=1.0
+        )
+        client = LSPClient(
+            transport, workspace_root=workspace, language="python", source="mock_lsp"
+        )
+        try:
+            _ = await client.initialize()
+            assert await client.wait_for_diagnostics("src/mock.py", timeout=1.0) is True
+            previous_version = client.diagnostics_version("src/mock.py")
+            await client.did_change("src/mock.py", text="changed", version=2)
+            ready = await client.wait_for_diagnostics(
+                "src/mock.py",
+                timeout=1.0,
+                after_version=previous_version,
+                document_version=2,
+            )
+            next_version = client.diagnostics_version("src/mock.py")
+            diagnostics = await client.diagnostics("src/mock.py")
+        finally:
+            await client.close()
+
+        assert ready is True
+        assert next_version > previous_version
+        assert diagnostics[0].message == "version 2"
+
+    _run(scenario())
+
+
+def test_wait_for_diagnostics_rejects_stale_document_version(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        workspace = _write_workspace(tmp_path)
+        transport = LSPTransport(
+            _server_command(tmp_path, "stale_diagnostics", workspace),
+            default_timeout=1.0,
+        )
+        client = LSPClient(
+            transport, workspace_root=workspace, language="python", source="mock_lsp"
+        )
+        try:
+            _ = await client.initialize()
+            assert await client.wait_for_diagnostics("src/mock.py", timeout=1.0) is True
+            previous_version = client.diagnostics_version("src/mock.py")
+            await client.did_change("src/mock.py", text="changed", version=2)
+            ready = await client.wait_for_diagnostics(
+                "src/mock.py",
+                timeout=0.05,
+                after_version=previous_version,
+                document_version=2,
+            )
+            next_version = client.diagnostics_version("src/mock.py")
+            diagnostics = await client.diagnostics("src/mock.py")
+        finally:
+            await client.close()
+
+        assert ready is False
+        assert next_version > previous_version
+        assert diagnostics[0].message == "version 1"
+
+    _run(scenario())
+
+
 def test_document_symbols_are_core_symbols_not_raw_payloads(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = _write_workspace(tmp_path)
-        transport = LSPTransport(_server_command(tmp_path, "normal", workspace), default_timeout=1.0)
-        client = LSPClient(transport, workspace_root=workspace, language="python", source="mock_lsp")
+        transport = LSPTransport(
+            _server_command(tmp_path, "normal", workspace), default_timeout=1.0
+        )
+        client = LSPClient(
+            transport, workspace_root=workspace, language="python", source="mock_lsp"
+        )
         try:
             _ = await client.initialize()
             symbols = await client.document_symbols("src/mock.py")
@@ -199,8 +323,16 @@ def test_document_symbols_are_core_symbols_not_raw_payloads(tmp_path: Path) -> N
 
         assert [type(symbol) for symbol in symbols] == [Symbol, Symbol, Symbol]
         assert [symbol.name for symbol in symbols] == ["MockService", "run", "helper"]
-        assert [symbol.kind for symbol in symbols] == [SymbolKind.CLASS, SymbolKind.METHOD, SymbolKind.FUNCTION]
-        assert [symbol.path for symbol in symbols] == ["src/mock.py", "src/mock.py", "src/mock.py"]
+        assert [symbol.kind for symbol in symbols] == [
+            SymbolKind.CLASS,
+            SymbolKind.METHOD,
+            SymbolKind.FUNCTION,
+        ]
+        assert [symbol.path for symbol in symbols] == [
+            "src/mock.py",
+            "src/mock.py",
+            "src/mock.py",
+        ]
         assert symbols[1].parent_id == symbols[0].id
         assert symbols[1].qualified_name == "MockService.run"
         assert symbols[0].source == "mock_lsp"
@@ -211,8 +343,12 @@ def test_document_symbols_are_core_symbols_not_raw_payloads(tmp_path: Path) -> N
 def test_client_timeout_uses_lsp_timeout(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = _write_workspace(tmp_path)
-        transport = LSPTransport(_server_command(tmp_path, "timeout", workspace), default_timeout=0.05)
-        client = LSPClient(transport, workspace_root=workspace, language="python", source="mock_lsp")
+        transport = LSPTransport(
+            _server_command(tmp_path, "timeout", workspace), default_timeout=0.05
+        )
+        client = LSPClient(
+            transport, workspace_root=workspace, language="python", source="mock_lsp"
+        )
         try:
             _ = await client.initialize()
             with pytest.raises(LSPTimeout):
@@ -223,11 +359,17 @@ def test_client_timeout_uses_lsp_timeout(tmp_path: Path) -> None:
     _run(scenario())
 
 
-def test_client_server_crash_maps_to_provider_unavailable_without_raw_trace(tmp_path: Path) -> None:
+def test_client_server_crash_maps_to_provider_unavailable_without_raw_trace(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         workspace = _write_workspace(tmp_path)
-        transport = LSPTransport(_server_command(tmp_path, "crash", workspace), default_timeout=0.5)
-        client = LSPClient(transport, workspace_root=workspace, language="python", source="mock_lsp")
+        transport = LSPTransport(
+            _server_command(tmp_path, "crash", workspace), default_timeout=0.5
+        )
+        client = LSPClient(
+            transport, workspace_root=workspace, language="python", source="mock_lsp"
+        )
         try:
             with pytest.raises(ProviderUnavailable) as raised:
                 _ = await client.initialize()
@@ -242,8 +384,12 @@ def test_client_server_crash_maps_to_provider_unavailable_without_raw_trace(tmp_
 def test_invalid_workspace_path_is_provider_unavailable(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = _write_workspace(tmp_path)
-        transport = LSPTransport(_server_command(tmp_path, "normal", workspace), default_timeout=1.0)
-        client = LSPClient(transport, workspace_root=workspace, language="python", source="mock_lsp")
+        transport = LSPTransport(
+            _server_command(tmp_path, "normal", workspace), default_timeout=1.0
+        )
+        client = LSPClient(
+            transport, workspace_root=workspace, language="python", source="mock_lsp"
+        )
         try:
             with pytest.raises(ProviderUnavailable):
                 _ = await client.document_symbols("../outside.py")

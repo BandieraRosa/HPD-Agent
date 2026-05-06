@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Awaitable, Sequence
 from pathlib import Path
@@ -80,6 +81,9 @@ class LSPClient:
         self._source: str = source
         self._converter: _LSPConverter = cast(_LSPConverter, get_converter())
         self._diagnostics_by_path: dict[str, list[Diagnostic]] = {}
+        self._diagnostics_conditions: dict[str, asyncio.Condition] = {}
+        self._diagnostics_versions: dict[str, int] = {}
+        self._diagnostics_document_versions: dict[str, int | None] = {}
         self._notification_handler_registered: bool = False
 
     async def start(self) -> None:
@@ -251,6 +255,67 @@ class LSPClient:
         relative_path = self._validate_path(path)
         return list(self._diagnostics_by_path.get(relative_path, ()))
 
+    def diagnostics_version(self, path: str) -> int:
+        """Return the publishDiagnostics snapshot version for a path."""
+        relative_path = self._validate_path(path)
+        return self._diagnostics_versions.get(relative_path, 0)
+
+    async def wait_for_diagnostics(
+        self,
+        path: str,
+        *,
+        timeout: float,
+        after_version: int | None = None,
+        document_version: int | None = None,
+    ) -> bool:
+        """Wait for a publishDiagnostics snapshot fresh enough for a document version."""
+        relative_path = self._validate_path(path)
+        if (
+            after_version is None
+            and document_version is None
+            and relative_path in self._diagnostics_by_path
+        ):
+            return True
+        target_version = 0 if after_version is None else after_version
+        if self._diagnostics_snapshot_is_fresh(
+            relative_path, target_version, document_version
+        ):
+            return True
+        condition = self._diagnostics_conditions.setdefault(
+            relative_path, asyncio.Condition()
+        )
+
+        async def wait_until_newer() -> bool:
+            async with condition:
+                while not self._diagnostics_snapshot_is_fresh(
+                    relative_path, target_version, document_version
+                ):
+                    _ = await condition.wait()
+                return True
+
+        try:
+            return await asyncio.wait_for(wait_until_newer(), timeout=max(0.0, timeout))
+        except asyncio.TimeoutError:
+            return False
+
+    def _diagnostics_snapshot_is_fresh(
+        self,
+        relative_path: str,
+        after_publish_version: int,
+        document_version: int | None,
+    ) -> bool:
+        current_publish_version = self._diagnostics_versions.get(relative_path, 0)
+        if current_publish_version <= after_publish_version:
+            return False
+        if document_version is None:
+            return True
+        published_document_version = self._diagnostics_document_versions.get(
+            relative_path
+        )
+        if published_document_version is None:
+            return True
+        return published_document_version >= document_version
+
     async def shutdown(self) -> None:
         if not await self._transport.is_running():
             await self.close()
@@ -322,9 +387,17 @@ class LSPClient:
         path = self._path_from_uri(params.uri)
         if path is None:
             return
-        self._diagnostics_by_path[path] = [
-            self._core_diagnostic(path, diagnostic) for diagnostic in params.diagnostics
-        ]
+        condition = self._diagnostics_conditions.setdefault(path, asyncio.Condition())
+        async with condition:
+            self._diagnostics_by_path[path] = [
+                self._core_diagnostic(path, diagnostic)
+                for diagnostic in params.diagnostics
+            ]
+            self._diagnostics_versions[path] = (
+                self._diagnostics_versions.get(path, 0) + 1
+            )
+            self._diagnostics_document_versions[path] = params.version
+            condition.notify_all()
 
     def _definition_locations(self, payload: object | None) -> list[Location]:
         if payload is None:

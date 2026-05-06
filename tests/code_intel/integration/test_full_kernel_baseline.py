@@ -217,8 +217,10 @@ class _FakeLSPFactory:
         spec: LanguageServerSpec,
         workspace_root: Path,
         command: Sequence[str],
+        *,
+        request_timeout_seconds: float,
     ) -> _FakeDiagnosticsClient:
-        _ = spec, workspace_root, command
+        _ = spec, workspace_root, command, request_timeout_seconds
         client = self.clients.pop(0)
         self.created.append(client)
         return client
