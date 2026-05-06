@@ -113,9 +113,16 @@ async def code_semantic(
             await kernel.call(capability, language_for_path(path), path=path)
         )
     else:
+        resolved_target = target_model
+        if target_model.priority != "location" and kernel.target_resolver is not None:
+            resolved = safe_cast_tool_result(await kernel.resolve_target(target_model))
+            if not resolved.ok:
+                return kernel_error_json(resolved)
+            resolved_locations = location_sequence([resolved.data])
+            resolved_target = CodeTarget(location=resolved_locations[0])
         result = safe_cast_tool_result(
             await kernel.call(
-                capability, language_for_target(target_model), target=target_model
+                capability, language_for_target(resolved_target), target=resolved_target
             )
         )
     if not result.ok:

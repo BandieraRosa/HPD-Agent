@@ -14,7 +14,17 @@ from langchain_core.tools import BaseTool
 import pytest
 
 from src.code_intel import CodeIntelKernel
-from src.code_intel.core import Range, Symbol, SymbolKind
+from src.code_intel.core import (
+    Capability,
+    CodeTarget,
+    ConfidenceClass,
+    Location,
+    ProviderHealth,
+    ProviderStatus,
+    Range,
+    Symbol,
+    SymbolKind,
+)
 from src.code_intel.index import CurrentFileForStore, SymbolIndexStore
 from src.code_intel.tools import code_semantic, set_code_intel_kernel
 
@@ -36,6 +46,46 @@ async def _ainvoke_text(item: BaseTool, args: dict[str, object]) -> str:
 
 def _payload(raw: str) -> dict[str, object]:
     return cast(dict[str, object], json.loads(raw))
+
+
+class _ResolvingReferencesProvider:
+    name: str = "resolving-references"
+    confidence_class: ConfidenceClass = ConfidenceClass.HIGH
+
+    def __init__(self) -> None:
+        self.targets: list[CodeTarget] = []
+
+    async def supports(self, capability: Capability, language: str) -> bool:
+        return capability == Capability.REFERENCES and language == "python"
+
+    async def health(self) -> ProviderHealth:
+        return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
+
+    async def find_references(self, target: CodeTarget) -> list[Location]:
+        self.targets.append(target)
+        if target.location is None:
+            raise AssertionError(
+                "semantic target must be resolved before provider dispatch"
+            )
+        return [target.location]
+
+
+class _PassThroughReferencesProvider:
+    name: str = "passthrough-references"
+    confidence_class: ConfidenceClass = ConfidenceClass.HIGH
+
+    def __init__(self) -> None:
+        self.targets: list[CodeTarget] = []
+
+    async def supports(self, capability: Capability, language: str) -> bool:
+        return capability == Capability.REFERENCES and language == "python"
+
+    async def health(self) -> ProviderHealth:
+        return ProviderHealth(status=ProviderStatus.HEALTHY, health_score=1.0)
+
+    async def find_references(self, target: CodeTarget) -> list[Location]:
+        self.targets.append(target)
+        return [Location(path="src/provider_native.py", range=_range(0, 0, 0, 6))]
 
 
 def _data(raw: str) -> dict[str, object]:
@@ -138,7 +188,7 @@ def indexed_semantic_kernel(tmp_path: Path) -> Generator[dict[str, object], None
         await store.initialize()
         await store.store_symbols(_metadata(source_path, content), [service, run, helper])
         set_code_intel_kernel(CodeIntelKernel(symbol_index=store, workspace_root=workspace))
-        return {"store": store, "path": source_path, "run": run}
+        return {"store": store, "workspace": workspace, "path": source_path, "run": run}
 
     state = _run(prepare())
     try:
@@ -205,6 +255,95 @@ def test_document_symbols_respects_result_limit(indexed_semantic_kernel: dict[st
     assert len(cast(list[object], data["document_symbols"])) == 1
     assert data["more_available"] is True
     assert meta["more_available"] is True
+
+
+def test_references_preserves_provider_native_target_without_resolver() -> None:
+    provider = _PassThroughReferencesProvider()
+    set_code_intel_kernel(CodeIntelKernel([provider]))
+    try:
+        data = _data(
+            _run(
+                _ainvoke_text(
+                    code_semantic,
+                    {
+                        "operation": "references",
+                        "target": {"symbol_id": "provider-native-symbol"},
+                    },
+                )
+            )
+        )
+    finally:
+        set_code_intel_kernel(None)
+    locations = cast(list[dict[str, object]], data["locations"])
+
+    assert [location["path"] for location in locations] == ["src/provider_native.py"]
+    assert len(provider.targets) == 1
+    assert provider.targets[0].symbol_id == "provider-native-symbol"
+    assert provider.targets[0].location is None
+
+
+def test_references_resolves_symbol_id_before_provider_dispatch(
+    indexed_semantic_kernel: dict[str, object],
+) -> None:
+    store = cast(SymbolIndexStore, indexed_semantic_kernel["store"])
+    workspace = cast(Path, indexed_semantic_kernel["workspace"])
+    run = cast(Symbol, indexed_semantic_kernel["run"])
+    provider = _ResolvingReferencesProvider()
+    set_code_intel_kernel(
+        CodeIntelKernel([provider], symbol_index=store, workspace_root=workspace)
+    )
+
+    data = _data(
+        _run(
+            _ainvoke_text(
+                code_semantic,
+                {
+                    "operation": "references",
+                    "target": {"symbol_id": run.id},
+                    "max_results": 10,
+                    "max_files": 5,
+                },
+            )
+        )
+    )
+    locations = cast(list[dict[str, object]], data["locations"])
+
+    assert data["operation"] == "references"
+    assert [location["path"] for location in locations] == [run.path]
+    assert len(provider.targets) == 1
+    dispatched_target = provider.targets[0]
+    assert dispatched_target.symbol_id is None
+    assert dispatched_target.anchor is None
+    assert dispatched_target.location is not None
+    assert dispatched_target.location.path == run.path
+    assert dispatched_target.location.range == run.selection_range
+
+
+def test_references_resolution_failure_does_not_dispatch_provider(
+    indexed_semantic_kernel: dict[str, object],
+) -> None:
+    store = cast(SymbolIndexStore, indexed_semantic_kernel["store"])
+    workspace = cast(Path, indexed_semantic_kernel["workspace"])
+    provider = _ResolvingReferencesProvider()
+    set_code_intel_kernel(
+        CodeIntelKernel([provider], symbol_index=store, workspace_root=workspace)
+    )
+
+    raw = _run(
+        _ainvoke_text(
+            code_semantic,
+            {
+                "operation": "references",
+                "target": {"symbol_id": "missing-symbol-id"},
+            },
+        )
+    )
+    payload = _payload(raw)
+    error = cast(dict[str, object], payload["error"])
+
+    assert payload["ok"] is False
+    assert error["code"] == "symbol_not_found"
+    assert provider.targets == []
 
 
 def test_definition_without_lsp_provider_returns_provider_unavailable(indexed_semantic_kernel: dict[str, object]) -> None:
