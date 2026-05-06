@@ -85,7 +85,7 @@ class Symbol(BaseModel):
 
     id: str = Field(
         default="",
-        description="Workspace-global stable symbol ID generated from language, path, name, and file hash.",
+        description="Workspace-global stable symbol ID generated from language, path, kind, name, position, and file hash.",
     )
     name: str = Field(description="Simple symbol name, such as 'login'.")
     qualified_name: str | None = Field(
@@ -141,7 +141,18 @@ class Symbol(BaseModel):
     @model_validator(mode="after")
     def generate_stable_id(self) -> "Symbol":
         identity_name = self.qualified_name or self.name
-        raw = f"{self.language}:{self.path}:{identity_name}:{self.file_hash}"
+        identity_range = self.selection_range or self.range
+        raw = ":".join(
+            (
+                self.language,
+                self.path,
+                self.kind.value,
+                identity_name,
+                str(identity_range.start_line),
+                str(identity_range.start_col),
+                self.file_hash,
+            )
+        )
         self.id = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
         return self
 
