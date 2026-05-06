@@ -1,6 +1,9 @@
 from src.core.models import TaskOutput
 from src.core.state import AgentState
+from typing import cast
+
 from src.core.observability import get_tracer
+from src.tools.invocation import invoke_tool
 
 _MAX_PROMPT_CHARS = 12000
 _MAX_FILE_RE_READS = 2
@@ -33,7 +36,7 @@ async def _re_read_key_files(done, max_files: int = _MAX_FILE_RE_READS) -> str:
     sections: list[str] = []
     for path in paths[:max_files]:
         try:
-            result = read_file_tool.invoke({"path": path})
+            result = await invoke_tool(read_file_tool, {"path": path})
             if result and not str(result).startswith("[Error]"):
                 # Truncate each file to 2000 chars to avoid bloat
                 content = str(result)[:2000]
@@ -95,12 +98,15 @@ async def synthesizer(state: AgentState) -> AgentState:
                 "expert_mode_count": sum(1 for o in done if o.expert_mode),
                 "failed_count": sum(1 for o in done if o.summary.startswith("[失败]")),
                 "prompt_chars": len(synthesis_prompt),
-                "files_re_read": min(len({p for o in done for p in o.tools_used}), _MAX_FILE_RE_READS),
+                "files_re_read": min(
+                    len({p for o in done for p in o.tools_used}), _MAX_FILE_RE_READS
+                ),
             },
         )
 
-        return {
+        update = {
             "synthesis_prompt": synthesis_prompt,
             "outputs": [*state.get("outputs", []), output],
             "parent_span_id": span_id,
         }
+        return cast(AgentState, cast(object, update))
