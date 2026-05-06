@@ -85,6 +85,24 @@ def main():
         method = message.get("method")
         if mode == "timeout" and method == "mock/never":
             continue
+        if mode == "error_response" and method == "mock/echo":
+            write_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "error": {"code": -32601, "message": "Method not found"},
+                }
+            )
+            continue
+        if mode == "malformed_error_response" and method == "mock/echo":
+            write_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "error": "not an object",
+                }
+            )
+            continue
         if mode == "concurrent" and method == "mock/echo":
             pending.append(message)
             if len(pending) == 2:
@@ -155,6 +173,41 @@ def test_request_timeout_maps_to_lsp_timeout(tmp_path: Path) -> None:
             assert await transport.is_running() is True
         finally:
             await transport.close()
+
+    _run(scenario())
+
+
+def test_jsonrpc_error_response_preserves_code_and_message(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        transport = LSPTransport(
+            _server_command(tmp_path, "error_response"), default_timeout=1.0
+        )
+        try:
+            with pytest.raises(ProviderUnavailable) as raised:
+                _ = await transport.request("mock/echo", {"name": "bad"})
+        finally:
+            await transport.close()
+
+        assert "code=-32601" in str(raised.value)
+        assert "Method not found" in str(raised.value)
+        assert raised.value.to_tool_error().code == "provider_unavailable"
+
+    _run(scenario())
+
+
+def test_jsonrpc_malformed_error_response_uses_generic_detail(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        transport = LSPTransport(
+            _server_command(tmp_path, "malformed_error_response"), default_timeout=1.0
+        )
+        try:
+            with pytest.raises(ProviderUnavailable) as raised:
+                _ = await transport.request("mock/echo", {"name": "bad"})
+        finally:
+            await transport.close()
+
+        assert str(raised.value) == "language server returned an error"
+        assert raised.value.to_tool_error().code == "provider_unavailable"
 
     _run(scenario())
 

@@ -59,6 +59,28 @@ def _parse_content_length(header_block: bytes) -> int:
     return content_length
 
 
+def _jsonrpc_error_detail(error_payload: object) -> str:
+    detail = "language server returned an error"
+    if not isinstance(error_payload, Mapping):
+        return detail
+    mapping = cast(Mapping[object, object], error_payload)
+
+    parts: list[str] = []
+    code = mapping.get("code")
+    if isinstance(code, str):
+        parts.append(f"code={code[:80]}")
+    elif isinstance(code, int) and not isinstance(code, bool):
+        parts.append(f"code={code}")
+
+    message = mapping.get("message")
+    if isinstance(message, str) and message.strip():
+        parts.append(f"message={' '.join(message.split())[:300]}")
+
+    if not parts:
+        return detail
+    return f"{detail}: {', '.join(parts)}"
+
+
 class LSPTransport:
     """Async stdio transport for JSON-RPC based language servers."""
 
@@ -305,7 +327,7 @@ class LSPTransport:
             return
         if "error" in message:
             future.set_exception(
-                ProviderUnavailable("language server returned an error")
+                ProviderUnavailable(_jsonrpc_error_detail(message.get("error")))
             )
             return
         future.set_result(message.get("result"))
