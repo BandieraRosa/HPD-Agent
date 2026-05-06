@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 from src.agents import QueryAgent
@@ -14,6 +15,7 @@ from src.code_intel.providers.lsp.manager import LSPManager
 
 VALID_SUBS = ("status", "start", "stop", "restart")
 _RUNTIME_ATTRS = (
+    "code_intel_runtime",
     "code_intel_lsp_provider",
     "_code_intel_lsp_provider",
     "lsp_provider",
@@ -38,7 +40,7 @@ async def run(raw: str, agent: QueryAgent) -> bool:
     parts = raw.strip().split()
     sub = parts[1].lower() if len(parts) > 1 else "status"
     if sub not in VALID_SUBS:
-        print("用法: /lsp [status|stop|restart <language>]")
+        print("用法: /lsp [status|start <language>|stop|restart <language>]")
         print(f"可用子命令: {', '.join(VALID_SUBS)}")
         return False
 
@@ -95,34 +97,56 @@ def _print_status(languages: list[str], runtime: object | None) -> None:
 
 
 async def _start(runtime: object | None, agent: QueryAgent, language: str) -> None:
-    """Create an LSPManager and start a language server, attaching it to the agent."""
-    from pathlib import Path
+    start_lsp = _callable_attr(runtime, "start_lsp")
+    if start_lsp is not None:
+        try:
+            handle = await _maybe_await(
+                cast(Callable[[str], object], start_lsp)(language)
+            )
+        except Exception as error:
+            print(f"语言服务器 LSP 启动失败: {language}")
+            print(f"原因: {error.__class__.__name__} - {error}")
+            return
+        _print_started(language, handle)
+        return
 
-    # Reuse existing manager if already bound
-    manager = runtime
-    if manager is not None and hasattr(manager, "ensure_client"):
-        pass
-    else:
+    manager = (
+        runtime if runtime is not None and hasattr(runtime, "ensure_client") else None
+    )
+    if manager is None:
         try:
             manager = LSPManager(workspace_root=str(Path.cwd()))
         except Exception as error:
-            print(f"语言服务器 LSP 启动失败: 无法创建 manager。")
+            print("语言服务器 LSP 启动失败: 无法创建 manager。")
             print(f"原因: {error.__class__.__name__} - {error}")
             return
 
     try:
-        handle = await manager.ensure_client(language)
+        handle = await cast(LSPManager, manager).ensure_client(language)
     except Exception as error:
         print(f"语言服务器 LSP 启动失败: {language}")
         print(f"原因: {error.__class__.__name__} - {error}")
         return
 
-    # Attach to agent so subsequent /lsp commands find it
-    agent._code_intel_lsp_manager = manager
+    setattr(agent, "_code_intel_lsp_manager", manager)
+    try:
+        from src.code_intel.providers.lsp.provider import LSPProvider
+        from src.code_intel.tools.runtime import get_code_intel_kernel
 
+        get_code_intel_kernel().register_provider(
+            LSPProvider(Path.cwd(), manager=cast(LSPManager, manager))
+        )
+    except Exception as error:
+        print(f"语言服务器 LSP provider 注册警告: {error.__class__.__name__}")
+    _print_started(language, handle)
+
+
+def _print_started(language: str, handle: object) -> None:
+    spec = cast(object | None, getattr(handle, "spec", None))
+    name = _str_attr(spec, "name") or "unknown"
     caps = getattr(handle, "capabilities", None)
     cap_names = _capability_summary(caps) if caps is not None else "未协商"
-    print(f"语言服务器 LSP 已启动: {language} / {handle.spec.name}")
+    print(f"语言服务器 LSP 已启动: {language} / {name}")
     print(f"  capabilities: {cap_names}")
 
 
@@ -130,15 +154,16 @@ async def _stop(runtime: object | None, language: str | None) -> None:
     if runtime is None:
         print("语言服务器 LSP 停止: 当前没有运行中的 LSP runtime。")
         return
-    shutdown = _callable_attr(runtime, "shutdown") or _callable_attr(
-        _manager_from_runtime(runtime), "shutdown"
+    stop = (
+        _callable_attr(runtime, "stop_lsp")
+        or _callable_attr(runtime, "shutdown")
+        or _callable_attr(_manager_from_runtime(runtime), "shutdown")
     )
-    if shutdown is None:
+    if stop is None:
         print("语言服务器 LSP 停止: runtime 不支持 shutdown。")
         return
     try:
-        result = cast(Callable[[str | None], object], shutdown)(language)
-        _ = await _maybe_await(result)
+        _ = await _maybe_await(cast(Callable[[str | None], object], stop)(language))
     except Exception as error:
         print("语言服务器 LSP 停止失败。")
         print(f"原因: {error.__class__.__name__}")
@@ -153,15 +178,16 @@ async def _restart(runtime: object | None, language: str) -> None:
             f"语言服务器 LSP 重启: 未绑定 runtime，未启动真实 server；无法重启 {language}。"
         )
         return
-    restart = _callable_attr(runtime, "restart") or _callable_attr(
-        _manager_from_runtime(runtime), "restart"
+    restart = (
+        _callable_attr(runtime, "restart_lsp")
+        or _callable_attr(runtime, "restart")
+        or _callable_attr(_manager_from_runtime(runtime), "restart")
     )
     if restart is None:
         print("语言服务器 LSP 重启: runtime 不支持 restart。")
         return
     try:
-        result = cast(Callable[[str], object], restart)(language)
-        health = await _maybe_await(result)
+        health = await _maybe_await(cast(Callable[[str], object], restart)(language))
     except Exception as error:
         print(f"语言服务器 LSP 重启失败: {language}")
         print(f"原因: {error.__class__.__name__}")

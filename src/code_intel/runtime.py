@@ -17,6 +17,8 @@ from src.code_intel.config import (
 )
 from src.code_intel.core import Symbol
 from src.code_intel.index import SymbolIndexer, SymbolIndexStore
+from src.code_intel.providers.lsp.manager import LSPManager, LSPServerHandle
+from src.code_intel.providers.lsp.provider import LSPProvider
 from src.code_intel.providers.text_search import TextSearchProvider
 from src.code_intel.providers.tree_sitter import (
     TREE_SITTER_INDEX_VERSION,
@@ -45,7 +47,7 @@ class CodeIntelRuntimeStatus:
 
 
 class CodeIntelRuntime:
-    """Own CodeIntel kernel providers, symbol index, and background work."""
+    """Own CodeIntel kernel providers, symbol index, LSP, and background work."""
 
     def __init__(
         self,
@@ -69,6 +71,8 @@ class CodeIntelRuntime:
             db_path=code_intel_index_db_path(self.workspace_root, config),
         )
         self.symbol_store: SymbolIndexStore | None = None
+        self.lsp_manager: LSPManager | None = None
+        self.lsp_provider: LSPProvider | None = None
         self._background_tasks: set[asyncio.Task[object]] = set()
         self._owns_global_kernel = False
         self._initialized = False
@@ -83,6 +87,7 @@ class CodeIntelRuntime:
         if self.config.enabled:
             self._register_static_providers()
             await self._attach_existing_index()
+            self._register_lsp_provider()
             self._schedule_startup_work()
         self._set_global_kernel()
         self.status.initialized = True
@@ -143,6 +148,39 @@ class CodeIntelRuntime:
                 )
         return removed
 
+    async def start_lsp(self, language: str) -> LSPServerHandle:
+        """Start or reuse one language server and keep one LSPProvider registered."""
+        provider = self._ensure_lsp_provider()
+        return await provider.manager.ensure_client(language)
+
+    async def stop_lsp(self, language: str | None = None) -> None:
+        if self.lsp_provider is not None:
+            await self.lsp_provider.shutdown(language)
+            return
+        if self.lsp_manager is not None:
+            await self.lsp_manager.shutdown(language)
+
+    async def restart_lsp(self, language: str) -> object:
+        provider = self._ensure_lsp_provider()
+        return await provider.restart(language)
+
+    @property
+    def handles(self) -> tuple[LSPServerHandle, ...]:
+        manager = self.lsp_manager or (
+            self.lsp_provider.manager if self.lsp_provider else None
+        )
+        return manager.handles if manager is not None else ()
+
+    @property
+    def manager(self) -> LSPManager | None:
+        return self.lsp_manager
+
+    async def shutdown(self, language: str | None = None) -> None:
+        await self.stop_lsp(language)
+
+    async def restart(self, language: str) -> object:
+        return await self.restart_lsp(language)
+
     async def close(self) -> None:
         """Cancel background work and release owned resources."""
         tasks = list(self._background_tasks)
@@ -157,6 +195,17 @@ class CodeIntelRuntime:
                 ):
                     self._warn(f"后台任务结束异常: {result.__class__.__name__}")
         self._background_tasks.clear()
+
+        if self.lsp_provider is not None:
+            try:
+                await self.lsp_provider.shutdown()
+            except Exception as error:
+                self._warn(f"LSP shutdown failed: {error.__class__.__name__}")
+        elif self.lsp_manager is not None:
+            try:
+                await self.lsp_manager.shutdown()
+            except Exception as error:
+                self._warn(f"LSP shutdown failed: {error.__class__.__name__}")
 
         if self.symbol_store is not None:
             try:
@@ -209,11 +258,41 @@ class CodeIntelRuntime:
         if previous is not None and previous is not store:
             await previous.close()
 
+    def _register_lsp_provider(self) -> None:
+        if not (self.config.lsp.enabled and self.config.providers.lsp):
+            return
+        try:
+            self._ensure_lsp_provider()
+        except Exception as error:
+            self._warn(f"LSP provider 初始化失败: {error.__class__.__name__} - {error}")
+
+    def _ensure_lsp_provider(self) -> LSPProvider:
+        if self.lsp_manager is None:
+            self.lsp_manager = LSPManager(
+                self.workspace_root,
+                idle_timeout_seconds=self.config.lsp.idle_shutdown_minutes * 60.0,
+            )
+        if self.lsp_provider is None:
+            self.lsp_provider = LSPProvider(
+                self.workspace_root,
+                manager=self.lsp_manager,
+                languages=set(self.config.lsp.languages),
+            )
+        self.kernel.register_provider(self.lsp_provider)
+        self.status.lsp_provider_registered = True
+        return self.lsp_provider
+
     def _schedule_startup_work(self) -> None:
         db_path = self._db_path()
         if self.config.index.auto_build_on_startup and not db_path.exists():
             self.status.index_build_scheduled = True
             self._track_task(asyncio.create_task(self._background_index_build()))
+        if self.config.lsp.prewarm_on_startup and self.lsp_provider is not None:
+            for language in self._detected_project_languages()[:1]:
+                self.status.lsp_prewarm_scheduled = True
+                self._track_task(
+                    asyncio.create_task(self._background_lsp_prewarm(language))
+                )
 
     async def _background_index_build(self) -> None:
         self.status.index_build_running = True
@@ -227,9 +306,31 @@ class CodeIntelRuntime:
         finally:
             self.status.index_build_running = False
 
+    async def _background_lsp_prewarm(self, language: str) -> None:
+        try:
+            _ = await self.start_lsp(language)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._warn(f"LSP 预热失败: {language} ({error.__class__.__name__})")
+
     def _track_task(self, task: asyncio.Task[object]) -> None:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+
+    def _detected_project_languages(self) -> list[str]:
+        languages: list[str] = []
+        if (
+            (self.workspace_root / "pyproject.toml").exists()
+            or (self.workspace_root / "setup.py").exists()
+            or (self.workspace_root / "requirements.txt").exists()
+        ) and "python" in self.config.lsp.languages:
+            languages.append("python")
+        if (self.workspace_root / "package.json").exists():
+            for language in ("typescript", "javascript"):
+                if language in self.config.lsp.languages:
+                    languages.append(language)
+        return languages
 
     def _set_global_kernel(self) -> None:
         set_code_intel_kernel(self.kernel)

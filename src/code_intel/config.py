@@ -35,6 +35,7 @@ class CodeIntelLSPConfig(BaseModel):
 
     enabled: bool = Field(default=True)
     languages: list[str] = Field(default_factory=lambda: list(_DEFAULT_LSP_LANGUAGES))
+    prewarm_on_startup: bool = Field(default=False)
     request_timeout_ms: int = Field(default=5_000, ge=1)
     idle_shutdown_minutes: int = Field(default=10, ge=0)
     max_restart_count: int = Field(default=3, ge=0)
