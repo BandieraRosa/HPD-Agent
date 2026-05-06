@@ -37,7 +37,7 @@ DEFAULT_LANGUAGE_SERVER_SPECS: tuple[LanguageServerSpec, ...] = (
         language="python",
         name="pyright",
         detect_command=["pyright", "--version"],
-        launch_command=["pyright", "--stdio"],
+        launch_command=["pyright-langserver", "--stdio"],
         install_hint="npm i -g pyright",
         root_markers=[
             "pyproject.toml",
