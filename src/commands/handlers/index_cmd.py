@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Sequence
+import inspect
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from src.agents import QueryAgent
 from src.code_intel.config import (
@@ -52,12 +53,13 @@ async def run(raw: str, agent: QueryAgent) -> bool:
         print("代码索引: code_intel 已在配置中禁用。")
         return False
 
+    runtime = _runtime_from_agent(agent)
     if sub == "status":
         await _run_status(config)
     elif sub == "build":
-        await _run_build(config)
+        await _run_build(config, runtime)
     else:
-        await _run_clear(config)
+        await _run_clear(config, runtime)
     return False
 
 
@@ -84,35 +86,40 @@ async def _run_status(config: CodeIntelConfig) -> None:
     print(f"  FTS: {'可用' if status.fts_available else '未启用或不可用'}")
 
 
-async def _run_build(config: CodeIntelConfig) -> None:
+async def _run_build(config: CodeIntelConfig, runtime: object | None = None) -> None:
     workspace_root = Path.cwd()
     db_path = code_intel_index_db_path(workspace_root, config)
+    result: Any
     try:
-        from src.code_intel.index import SymbolIndexer
-        from src.code_intel.providers.tree_sitter import (
-            TREE_SITTER_INDEX_VERSION,
-            TREE_SITTER_QUERY_VERSION,
-            TreeSitterProvider,
-        )
+        build_symbol_index = _callable_attr(runtime, "build_symbol_index")
+        if build_symbol_index is not None:
+            result = await _maybe_await(build_symbol_index())
+        else:
+            from src.code_intel.index import SymbolIndexer
+            from src.code_intel.providers.tree_sitter import (
+                TREE_SITTER_INDEX_VERSION,
+                TREE_SITTER_QUERY_VERSION,
+                TreeSitterProvider,
+            )
 
-        provider = TreeSitterProvider(workspace_root)
+            provider = TreeSitterProvider(workspace_root)
 
-        async def extract_symbols(
-            workspace_root: Path, path: str, language: str
-        ) -> Sequence[Symbol]:
-            _ = workspace_root, language
-            return await provider.outline(path)
+            async def extract_symbols(
+                workspace_root: Path, path: str, language: str
+            ) -> Sequence[Symbol]:
+                _ = workspace_root, language
+                return await provider.outline(path)
 
-        indexer = SymbolIndexer(
-            workspace_root,
-            extractor=extract_symbols,
-            db_path=db_path,
-            grammar_version=TREE_SITTER_INDEX_VERSION,
-            query_version=TREE_SITTER_QUERY_VERSION,
-            max_file_size_bytes=config.index.max_file_size_bytes,
-        )
-        result = await indexer.index_workspace()
-        await indexer.store.close()
+            indexer = SymbolIndexer(
+                workspace_root,
+                extractor=extract_symbols,
+                db_path=db_path,
+                grammar_version=TREE_SITTER_INDEX_VERSION,
+                query_version=TREE_SITTER_QUERY_VERSION,
+                max_file_size_bytes=config.index.max_file_size_bytes,
+            )
+            result = await indexer.index_workspace()
+            await indexer.store.close()
     except ModuleNotFoundError as error:
         print("代码索引构建失败。")
         print(f"原因: 缺少模块 - {error.name}")
@@ -141,14 +148,36 @@ async def _run_build(config: CodeIntelConfig) -> None:
     print(f"  FTS: {'可用' if result.fts_available else '降级'}")
 
 
-async def _run_clear(config: CodeIntelConfig) -> None:
+async def _run_clear(config: CodeIntelConfig, runtime: object | None = None) -> None:
     db_path = code_intel_index_db_path(Path.cwd(), config)
-    removed = await asyncio.to_thread(_clear_index_files, db_path)
+    clear_symbol_index = _callable_attr(runtime, "clear_symbol_index")
+    if clear_symbol_index is not None:
+        removed_raw = await _maybe_await(clear_symbol_index())
+        removed = int(cast(Any, removed_raw))
+    else:
+        removed = await asyncio.to_thread(_clear_index_files, db_path)
     if removed == 0:
         print("代码索引清理: 当前 workspace 没有可删除的索引文件。")
         return
     print(f"代码索引清理完成: 删除 {removed} 个文件。")
     print(f"  db: {db_path}")
+
+
+def _runtime_from_agent(agent: QueryAgent) -> object | None:
+    return cast(object | None, getattr(agent, "code_intel_runtime", None))
+
+
+def _callable_attr(obj: object | None, attr: str) -> Callable[[], object] | None:
+    if obj is None:
+        return None
+    value = cast(object | None, getattr(obj, attr, None))
+    return cast(Callable[[], object], value) if callable(value) else None
+
+
+async def _maybe_await(result: object) -> object:
+    if inspect.isawaitable(result):
+        return await cast(Awaitable[object], result)
+    return result
 
 
 def _inspect_index_db(db_path: Path) -> _IndexStatus:
