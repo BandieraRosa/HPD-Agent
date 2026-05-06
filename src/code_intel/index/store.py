@@ -18,7 +18,7 @@ from src.code_intel.tracing import trace_span
 
 from .invalidation import IndexedFileMetadata
 
-SCHEMA_VERSION = "symbol-index-schema-v1"
+SCHEMA_VERSION = "symbol-index-schema-v2"
 _DEFAULT_MAX_SEARCH_RESULTS = 100
 _RowValue = str | int | float | bytes | None
 
@@ -36,6 +36,9 @@ class SymbolHistoryEntry:
     path: str
     qualified_name: str
     file_hash: str
+    kind: SymbolKind | None
+    selection_start_line: int | None
+    selection_start_col: int | None
     created_at: float
     last_seen_at: float
 
@@ -79,6 +82,7 @@ class SymbolIndexStore:
         connection = await self._connect()
         await self._initialize_pragmas(connection)
         await self._create_core_schema(connection)
+        await self._migrate_core_schema(connection)
         await self._initialize_fts(connection)
         await connection.commit()
 
@@ -269,16 +273,33 @@ class SymbolIndexStore:
         qualified_name: str,
         *,
         language: str | None = None,
+        kind: SymbolKind | None = None,
+        selection_start_line: int | None = None,
+        selection_start_col: int | None = None,
     ) -> Symbol | None:
         """Return the current symbol matching a path and qualified-name identity."""
         relative_path = validate_workspace_relative_path(path)
         if not qualified_name:
             return None
         connection = await self._connect()
-        language_clause = "AND language = ?" if language is not None else ""
+        filters = [
+            "path = ?",
+            "(qualified_name = ? OR (qualified_name IS NULL AND name = ?))",
+        ]
         parameters: list[object] = [relative_path, qualified_name, qualified_name]
         if language is not None:
+            filters.append("language = ?")
             parameters.append(language)
+        if kind is not None:
+            filters.append("kind = ?")
+            parameters.append(kind.value)
+        if selection_start_line is not None:
+            filters.append("sel_start_line = ?")
+            parameters.append(selection_start_line)
+        if selection_start_col is not None:
+            filters.append("sel_start_col = ?")
+            parameters.append(selection_start_col)
+        where_clause = " AND ".join(filters)
         with trace_span(
             "code_intel.index.get_symbol_by_qualified_name",
             {"path": relative_path, "language": language or ""},
@@ -287,9 +308,7 @@ class SymbolIndexStore:
                 connection,
                 f"""
                 {_SYMBOL_SELECT_SQL}
-                WHERE path = ?
-                  AND (qualified_name = ? OR (qualified_name IS NULL AND name = ?))
-                  {language_clause}
+                WHERE {where_clause}
                 ORDER BY stale ASC, start_line, start_col, name
                 LIMIT 1
                 """,
@@ -346,7 +365,9 @@ class SymbolIndexStore:
         row = await _fetchone(
             connection,
             """
-            SELECT symbol_id, language, path, qualified_name, file_hash, created_at, last_seen_at
+            SELECT symbol_id, language, path, qualified_name, file_hash,
+                   kind, selection_start_line, selection_start_col,
+                   created_at, last_seen_at
             FROM symbol_id_history
             WHERE symbol_id = ?
             """,
@@ -362,6 +383,9 @@ class SymbolIndexStore:
                 path=str(row["path"]),
                 qualified_name=str(row["qualified_name"]),
                 file_hash=str(row["file_hash"]),
+                kind=_symbol_kind_or_none(row["kind"]),
+                selection_start_line=_optional_int(row["selection_start_line"]),
+                selection_start_col=_optional_int(row["selection_start_col"]),
                 created_at=_to_float(row["created_at"]),
                 last_seen_at=_to_float(row["last_seen_at"]),
             )
@@ -380,7 +404,9 @@ class SymbolIndexStore:
         rows = cast(
             Sequence[_Row],
             await connection.execute_fetchall("""
-                SELECT symbol_id, language, path, qualified_name, file_hash, created_at, last_seen_at
+                SELECT symbol_id, language, path, qualified_name, file_hash,
+                       kind, selection_start_line, selection_start_col,
+                       created_at, last_seen_at
                 FROM symbol_id_history
                 ORDER BY path, qualified_name, file_hash, symbol_id
                 """),
@@ -393,6 +419,9 @@ class SymbolIndexStore:
                     path=str(row["path"]),
                     qualified_name=str(row["qualified_name"]),
                     file_hash=str(row["file_hash"]),
+                    kind=_symbol_kind_or_none(row["kind"]),
+                    selection_start_line=_optional_int(row["selection_start_line"]),
+                    selection_start_col=_optional_int(row["selection_start_col"]),
                     created_at=_to_float(row["created_at"]),
                     last_seen_at=_to_float(row["last_seen_at"]),
                 )
@@ -462,6 +491,9 @@ class SymbolIndexStore:
                 path TEXT NOT NULL,
                 qualified_name TEXT NOT NULL,
                 file_hash TEXT NOT NULL,
+                kind TEXT,
+                selection_start_line INTEGER,
+                selection_start_col INTEGER,
                 created_at REAL NOT NULL,
                 last_seen_at REAL NOT NULL
             );
@@ -471,6 +503,17 @@ class SymbolIndexStore:
             CREATE INDEX IF NOT EXISTS idx_symbol_id_history_path_qname
                 ON symbol_id_history(path, qualified_name);
             """)
+
+    async def _migrate_core_schema(self, connection: aiosqlite.Connection) -> None:
+        history_columns = set(await self.table_columns("symbol_id_history"))
+        migrations = {
+            "kind": "ALTER TABLE symbol_id_history ADD COLUMN kind TEXT",
+            "selection_start_line": "ALTER TABLE symbol_id_history ADD COLUMN selection_start_line INTEGER",
+            "selection_start_col": "ALTER TABLE symbol_id_history ADD COLUMN selection_start_col INTEGER",
+        }
+        for column, statement in migrations.items():
+            if column not in history_columns:
+                _ = await connection.execute(statement)
 
     async def _initialize_fts(self, connection: aiosqlite.Connection) -> None:
         if not self.enable_fts:
@@ -562,16 +605,21 @@ class SymbolIndexStore:
         self, connection: aiosqlite.Connection, symbol: Symbol, seen_at: float
     ) -> None:
         qualified_name = symbol.qualified_name or symbol.name
+        selection = symbol.selection_range
         _ = await connection.execute(
             """
             INSERT INTO symbol_id_history (
-                symbol_id, language, path, qualified_name, file_hash, created_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                symbol_id, language, path, qualified_name, file_hash, kind,
+                selection_start_line, selection_start_col, created_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol_id) DO UPDATE SET
                 language = excluded.language,
                 path = excluded.path,
                 qualified_name = excluded.qualified_name,
                 file_hash = excluded.file_hash,
+                kind = excluded.kind,
+                selection_start_line = excluded.selection_start_line,
+                selection_start_col = excluded.selection_start_col,
                 last_seen_at = excluded.last_seen_at
             """,
             (
@@ -580,6 +628,9 @@ class SymbolIndexStore:
                 symbol.path,
                 qualified_name,
                 symbol.file_hash,
+                symbol.kind.value,
+                selection.start_line if selection is not None else None,
+                selection.start_col if selection is not None else None,
                 seen_at,
                 seen_at,
             ),
@@ -594,10 +645,22 @@ class SymbolIndexStore:
     ) -> list[Symbol]:
         connection = await self._connect()
         where_kind = "AND s.kind = ?" if kind is not None else ""
+        escape = "\\"
+        prefix_pattern = f"{_escape_like(query)}%"
         params: list[str | int] = [_fts_query(query)]
         if kind is not None:
             params.append(kind.value)
-        params.append(limit)
+        params.extend(
+            [
+                query,
+                query,
+                prefix_pattern,
+                escape,
+                prefix_pattern,
+                escape,
+                limit,
+            ]
+        )
         rows = cast(
             Sequence[_Row],
             await connection.execute_fetchall(
@@ -609,7 +672,16 @@ class SymbolIndexStore:
                 FROM symbols_fts
                 JOIN symbols AS s ON s.rowid = symbols_fts.rowid
                 WHERE symbols_fts MATCH ? {where_kind}
-                ORDER BY s.qualified_name IS NULL, s.qualified_name, s.name, s.path
+                ORDER BY
+                    CASE
+                        WHEN lower(s.name) = lower(?) THEN 0
+                        WHEN lower(COALESCE(s.qualified_name, '')) = lower(?) THEN 1
+                        WHEN s.name LIKE ? ESCAPE ? THEN 2
+                        WHEN COALESCE(s.qualified_name, '') LIKE ? ESCAPE ? THEN 3
+                        ELSE 4
+                    END,
+                    s.stale ASC, s.start_line, s.start_col,
+                    s.qualified_name IS NULL, s.qualified_name, s.name, s.path
                 LIMIT ?
                 """,
                 tuple(params),
@@ -625,7 +697,9 @@ class SymbolIndexStore:
         limit: int,
     ) -> list[Symbol]:
         connection = await self._connect()
-        pattern = f"%{_escape_like(query)}%"
+        escaped_query = _escape_like(query)
+        pattern = f"%{escaped_query}%"
+        prefix_pattern = f"{escaped_query}%"
         where_kind = "AND kind = ?" if kind is not None else ""
         escape = "\\"
         params: list[str | int] = [
@@ -640,7 +714,17 @@ class SymbolIndexStore:
         ]
         if kind is not None:
             params.append(kind.value)
-        params.append(limit)
+        params.extend(
+            [
+                query,
+                query,
+                prefix_pattern,
+                escape,
+                prefix_pattern,
+                escape,
+                limit,
+            ]
+        )
         rows = cast(
             Sequence[_Row],
             await connection.execute_fetchall(
@@ -652,7 +736,16 @@ class SymbolIndexStore:
                     OR COALESCE(signature, '') LIKE ? ESCAPE ?
                     OR path LIKE ? ESCAPE ?
                 ) {where_kind}
-                ORDER BY qualified_name IS NULL, qualified_name, name, path
+                ORDER BY
+                    CASE
+                        WHEN lower(name) = lower(?) THEN 0
+                        WHEN lower(COALESCE(qualified_name, '')) = lower(?) THEN 1
+                        WHEN name LIKE ? ESCAPE ? THEN 2
+                        WHEN COALESCE(qualified_name, '') LIKE ? ESCAPE ? THEN 3
+                        ELSE 4
+                    END,
+                    stale ASC, start_line, start_col,
+                    qualified_name IS NULL, qualified_name, name, path
                 LIMIT ?
                 """,
                 tuple(params),
@@ -720,6 +813,14 @@ def _to_int(value: _RowValue) -> int:
     return int(_required_row_value(value))
 
 
+def _optional_int(value: _RowValue) -> int | None:
+    return None if value is None else int(value)
+
+
+def _symbol_kind_or_none(value: _RowValue) -> SymbolKind | None:
+    return None if value is None else SymbolKind(str(value))
+
+
 def _to_float(value: _RowValue) -> float:
     return float(_required_row_value(value))
 
@@ -742,8 +843,9 @@ def _symbol_from_row(row: _Row) -> Symbol:
     selection = _range_or_none(
         row, "sel_start_line", "sel_start_col", "sel_end_line", "sel_end_col"
     )
-    return Symbol(
-        id=str(row["id"]),
+    stored_id = str(row["id"])
+    symbol = Symbol(
+        id=stored_id,
         name=str(row["name"]),
         qualified_name=cast(str | None, row["qualified_name"]),
         kind=SymbolKind(str(row["kind"])),
@@ -765,6 +867,8 @@ def _symbol_from_row(row: _Row) -> Symbol:
         index_version=str(row["index_version"]),
         stale=bool(_to_int(row["stale"])),
     )
+    symbol.id = stored_id
+    return symbol
 
 
 def _range_or_none(
