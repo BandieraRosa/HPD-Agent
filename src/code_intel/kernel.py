@@ -138,7 +138,17 @@ class CodeIntelKernel:
         return self._target_resolver
 
     def register_provider(self, provider: object) -> "CodeIntelKernel":
-        """Register a provider explicitly and return the kernel for chaining."""
+        """Register a provider explicitly and return the kernel for chaining.
+
+        Provider registration is idempotent by provider name so repeated runtime
+        startup or explicit /lsp start calls cannot create duplicate routes.
+        """
+        provider_name = self._provider_name(provider)
+        if any(
+            self._provider_name(existing) == provider_name
+            for existing in self._providers
+        ):
+            return self
         self._providers.append(provider)
         return self
 
