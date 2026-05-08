@@ -9,6 +9,7 @@ from typing import Literal
 
 from src.code_intel.core import (
     Capability,
+    DIAGNOSTIC_SEVERITIES,
     Diagnostic,
     DiagnosticSeverity,
     Symbol,
@@ -33,6 +34,7 @@ from ._helpers import (
     merge_meta,
     safe_cast_tool_result,
     serialize_result,
+    stable_strings,
     symbol_sequence,
     validation_error_json,
 )
@@ -41,12 +43,11 @@ from .models import ChecksSkipped, CodeVerifyData
 from .runtime import get_code_intel_kernel
 
 _CHECKS = {"lsp_diagnostics", "tests", "lint"}
-_SEVERITIES = ("error", "warning", "info", "hint")
 _PROVIDER_UNAVAILABLE = "provider_unavailable"
 
 
 def _severity_counts(diagnostics: Iterable[Diagnostic]) -> dict[str, int]:
-    delta = {severity: 0 for severity in _SEVERITIES}
+    delta = {severity: 0 for severity in DIAGNOSTIC_SEVERITIES}
     for diagnostic in diagnostics:
         delta[diagnostic.severity.value] += 1
     return delta
@@ -91,22 +92,14 @@ def _provider_identity() -> tuple[str, str]:
             {
                 "name": provider_name,
                 "class": f"{provider.__class__.__module__}.{provider.__class__.__qualname__}",
-                "capabilities": _stable_strings(getattr(provider, "capabilities", ())),
-                "languages": _stable_strings(getattr(provider, "languages", ())),
+                "capabilities": stable_strings(getattr(provider, "capabilities", ())),
+                "languages": stable_strings(getattr(provider, "languages", ())),
             }
         )
     provider_id = (
         "+".join(str(record["name"]) for record in records) if records else "none"
     )
     return provider_id, stable_json_hash(records)
-
-
-def _stable_strings(values: object) -> list[str]:
-    if isinstance(values, (str, bytes, bytearray)):
-        return [str(values)]
-    if not isinstance(values, Iterable):
-        return []
-    return sorted(str(getattr(item, "value", item)) for item in values)
 
 
 async def _symbols_for_path(path: str) -> list[Symbol]:
@@ -169,7 +162,7 @@ def _provider_partial_data(
         new_diagnostics=[],
         resolved_diagnostics=[],
         unchanged_diagnostics=[],
-        severity_delta={severity: 0 for severity in _SEVERITIES},
+        severity_delta={severity: 0 for severity in DIAGNOSTIC_SEVERITIES},
         checks_run=[],
         checks_skipped=skipped,
         recommended_next_action="abort",

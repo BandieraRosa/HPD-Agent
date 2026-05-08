@@ -4,46 +4,33 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Literal, cast
 
 from pydantic import BaseModel, Field, field_validator
 
-from src.code_intel.core import Diagnostic, DiagnosticSeverity, Range, Symbol, ToolError
-from src.code_intel.core.models import validate_workspace_relative_path
-from src.code_intel.tracing import trace_span
+from src.code_intel.core import (
+    DIAGNOSTIC_SEVERITIES,
+    Diagnostic,
+    DiagnosticSeverity,
+    Range,
+    Symbol,
+    ToolError,
+)
+from src.code_intel.core.models import (
+    range_contains,
+    range_size,
+    validate_workspace_relative_path,
+)
+from src.code_intel.tracing import normalize_diagnostic_message, trace_span
 
 CallSource = Literal["workflow", "agent"]
-_SEVERITIES = ("error", "warning", "info", "hint")
 _DELETED_ANCHOR = "<deleted>"
 
-_QUOTED_RE = re.compile(r"([\"'`])(?:\\.|(?!\1).)*\1")
-_LINE_COL_TUPLE_RE = re.compile(r"\(\s*\d+\s*,\s*\d+\s*\)")
-_LINE_COLON_RE = re.compile(r":\d+:\d+\b")
-_LINE_REF_RE = re.compile(r"\b([Ll]ines?)\s+\d+(?:\s*(?:-|to|through)\s*\d+)?")
-_COLUMN_REF_RE = re.compile(r"\b([Cc]ol(?:umn)?s?)\s+\d+")
-_FLOAT_RE = re.compile(r"(?<![\w.])-?\d+\.\d+(?![\w.])")
-_INTEGER_RE = re.compile(r"(?<![\w.])-?\d+(?![\w.])")
-
-
-def _normalize_message(text: str) -> str:
-    """Normalize diagnostic messages by replacing volatile values with placeholders."""
-    normalized = _QUOTED_RE.sub("<quoted>", text)
-    normalized = _LINE_COL_TUPLE_RE.sub("(<line>, <column>)", normalized)
-    normalized = _LINE_COLON_RE.sub(":<line>:<column>", normalized)
-    normalized = _LINE_REF_RE.sub(lambda match: f"{match.group(1)} <line>", normalized)
-    normalized = _COLUMN_REF_RE.sub(
-        lambda match: f"{match.group(1)} <column>", normalized
-    )
-    normalized = _FLOAT_RE.sub("<float>", normalized)
-    normalized = _INTEGER_RE.sub("<int>", normalized)
-    return " ".join(normalized.split())
-
-
 # Public alias so package __init__.py can import without reportPrivateUsage.
-normalize_message = _normalize_message
+normalize_message = normalize_diagnostic_message
+_normalize_message = normalize_diagnostic_message
 
 
 def _normalize_paths(paths: Iterable[str]) -> tuple[str, ...]:
@@ -395,7 +382,7 @@ class DiagnosticsDelta(BaseModel):
         default_factory=list, description="Diagnostics present before and after."
     )
     severity_delta: dict[str, int] = Field(
-        default_factory=lambda: {severity: 0 for severity in _SEVERITIES}
+        default_factory=lambda: {severity: 0 for severity in DIAGNOSTIC_SEVERITIES}
     )
     partial: bool = Field(
         default=False,
@@ -626,11 +613,11 @@ def _semantic_anchor(
     candidates = [
         symbol
         for symbol in symbols
-        if symbol.path == path and _range_contains(symbol.range, source_range)
+        if symbol.path == path and range_contains(symbol.range, source_range)
     ]
     if not candidates:
         return None, None
-    selected = min(candidates, key=lambda symbol: _range_size(symbol.range))
+    selected = min(candidates, key=lambda symbol: range_size(symbol.range))
     identity = selected.qualified_name or selected.name
     return identity, identity
 
@@ -648,24 +635,10 @@ def _diagnostic_fingerprint(
     )
 
 
-def _range_contains(outer: Range, inner: Range) -> bool:
-    return (outer.start_line, outer.start_col) <= (
-        inner.start_line,
-        inner.start_col,
-    ) and (inner.end_line, inner.end_col,) <= (outer.end_line, outer.end_col)
-
-
-def _range_size(source_range: Range) -> tuple[int, int]:
-    return (
-        source_range.end_line - source_range.start_line,
-        source_range.end_col - source_range.start_col,
-    )
-
-
 def _severity_delta(
     new: list[DeltaDiagnostic], resolved: list[DeltaDiagnostic]
 ) -> dict[str, int]:
-    delta = {severity: 0 for severity in _SEVERITIES}
+    delta = {severity: 0 for severity in DIAGNOSTIC_SEVERITIES}
     for item in new:
         delta[item.diagnostic.severity.value] += 1
     for item in resolved:

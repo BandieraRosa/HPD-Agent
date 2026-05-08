@@ -9,7 +9,7 @@ import stat
 from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Protocol, TypeVar, cast, runtime_checkable
 
 from lsprotocol import types as lsp_types
@@ -28,25 +28,14 @@ from src.code_intel.core import (
     Range,
     Symbol,
 )
-from src.code_intel.core.models import validate_workspace_relative_path
+from src.code_intel.core.languages import language_for_path
 
+from ._paths import validate_lsp_workspace_path
 from .manager import LSPManager, LSPServerHandle
 from .registry import LanguageServerSpec
 
 T = TypeVar("T")
 
-_LANGUAGE_BY_EXTENSION = {
-    ".py": "python",
-    ".pyi": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".mts": "typescript",
-    ".cts": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-}
 _ROUTED_CAPABILITIES = {
     Capability.DEFINITION,
     Capability.REFERENCES,
@@ -262,12 +251,8 @@ class LSPProvider:
         return ConfidenceClass.LOW
 
     async def goto_definition(self, target: CodeTarget) -> list[Location]:
-        location = self._target_location(target)
-        language = self._language_for_path(location.path)
-        _ = self._language_context.set(language)
-        client = await self._client_for_language(language, Capability.DEFINITION)
-        line, character = await self._prepare_semantic_request(
-            location, language, client
+        location, language, client, line, character = (
+            await self._prepare_semantic_operation(target, Capability.DEFINITION)
         )
         return await self._with_unhealthy_on_unavailable(
             language,
@@ -279,12 +264,8 @@ class LSPProvider:
         )
 
     async def find_references(self, target: CodeTarget) -> list[Location]:
-        location = self._target_location(target)
-        language = self._language_for_path(location.path)
-        _ = self._language_context.set(language)
-        client = await self._client_for_language(language, Capability.REFERENCES)
-        line, character = await self._prepare_semantic_request(
-            location, language, client
+        location, language, client, line, character = (
+            await self._prepare_semantic_operation(target, Capability.REFERENCES)
         )
         return await self._with_unhealthy_on_unavailable(
             language,
@@ -297,12 +278,8 @@ class LSPProvider:
         )
 
     async def hover(self, target: CodeTarget) -> HoverInfo | None:
-        location = self._target_location(target)
-        language = self._language_for_path(location.path)
-        _ = self._language_context.set(language)
-        client = await self._client_for_language(language, Capability.HOVER)
-        line, character = await self._prepare_semantic_request(
-            location, language, client
+        location, language, client, line, character = (
+            await self._prepare_semantic_operation(target, Capability.HOVER)
         )
         return await self._with_unhealthy_on_unavailable(
             language,
@@ -314,7 +291,7 @@ class LSPProvider:
         )
 
     async def document_symbols(self, path: str) -> list[Symbol]:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
         client = await self._client_for_language(language, Capability.DOCUMENT_SYMBOLS)
@@ -323,7 +300,7 @@ class LSPProvider:
         )
 
     async def diagnostics(self, path: str) -> list[Diagnostic]:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
         async with self._document_lock(relative_path):
@@ -370,7 +347,7 @@ class LSPProvider:
             return list(diagnostics)
 
     async def notify_did_open(self, path: str, content: str) -> None:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
         async with self._document_lock(relative_path):
@@ -389,7 +366,7 @@ class LSPProvider:
                 self._document_snapshots[relative_path] = snapshot
 
     async def notify_did_change(self, path: str, new_content: str) -> None:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
         async with self._document_lock(relative_path):
@@ -420,7 +397,7 @@ class LSPProvider:
                 _ = self._document_snapshots.pop(relative_path, None)
 
     async def notify_did_save(self, path: str, content: str | None = None) -> None:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         language = self._language_for_path(relative_path)
         _ = self._language_context.set(language)
         async with self._document_lock(relative_path):
@@ -611,13 +588,25 @@ class LSPProvider:
         )
         return version
 
+    async def _prepare_semantic_operation(
+        self, target: CodeTarget, capability: Capability
+    ) -> tuple[Location, str, _ProviderLSPClient, int, int]:
+        location = self._target_location(target)
+        language = self._language_for_path(location.path)
+        _ = self._language_context.set(language)
+        client = await self._client_for_language(language, capability)
+        line, character = await self._prepare_semantic_request(
+            location, language, client
+        )
+        return location, language, client, line, character
+
     async def _prepare_semantic_request(
         self,
         location: Location,
         language: str,
         client: _ProviderLSPClient,
     ) -> tuple[int, int]:
-        relative_path = self._validate_path(location.path)
+        relative_path = validate_lsp_workspace_path(location.path)
         fallback = (location.range.start_line, location.range.start_col)
         async with self._document_lock(relative_path):
             try:
@@ -897,20 +886,11 @@ class LSPProvider:
         return version
 
     def _language_for_path(self, path: str) -> str:
-        relative_path = self._validate_path(path)
-        language = _LANGUAGE_BY_EXTENSION.get(
-            PurePosixPath(relative_path).suffix.casefold()
-        )
+        relative_path = validate_lsp_workspace_path(path)
+        language = language_for_path(relative_path)
         if language is None or language not in self.languages:
             raise ProviderUnavailable("当前文件没有可用的 LSP 语言服务器。")
         return language
-
-    @staticmethod
-    def _validate_path(path: str) -> str:
-        try:
-            return validate_workspace_relative_path(path)
-        except ValueError:
-            raise ProviderUnavailable("invalid LSP workspace path") from None
 
 
 __all__ = ["LSPProvider"]

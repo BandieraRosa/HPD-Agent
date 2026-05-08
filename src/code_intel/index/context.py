@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from src.code_intel.core import (
@@ -12,10 +11,11 @@ from src.code_intel.core import (
     Symbol,
     SymbolKind,
     SymbolNotFound,
+    read_source_text,
 )
-from src.code_intel.core.models import validate_workspace_relative_path
+from src.code_intel.core.models import text_for_range
 
-from .resolver import IndexBackedTargetResolver, text_for_range
+from .resolver import IndexBackedTargetResolver
 from .store import SymbolIndexStore
 
 _CONTEXT_SYMBOL_KINDS = {
@@ -91,20 +91,7 @@ class IndexBackedCodeContext:
         return _apply_budget(context, max_tokens), resolved.flags
 
     async def _read_text(self, path: str) -> str:
-        relative_path = validate_workspace_relative_path(path)
-        absolute_path = (self.workspace_root / relative_path).resolve(strict=False)
-        try:
-            _ = absolute_path.relative_to(self.workspace_root)
-        except ValueError as error:
-            raise SymbolNotFound("context path escaped workspace") from error
-
-        def read_sync() -> str:
-            return absolute_path.read_text(encoding="utf-8", errors="replace")
-
-        try:
-            return await asyncio.to_thread(read_sync)
-        except OSError as error:
-            raise SymbolNotFound("context source file is unavailable") from error
+        return await read_source_text(self.workspace_root, path, "context")
 
 
 def _needs_source(include: set[ContextPart]) -> bool:

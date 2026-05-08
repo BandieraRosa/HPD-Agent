@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Sequence
-from pathlib import PurePosixPath
 from typing import TypeVar, cast
 
 from pydantic import BaseModel
 
+from src.code_intel.core.languages import (
+    TOOL_LANGUAGE_BY_EXTENSION,
+    language_for_path_or_default,
+)
 from src.code_intel.core import (
     CodeContext,
     CodeTarget,
@@ -25,30 +28,6 @@ from src.code_intel.core import (
 T = TypeVar("T", bound=BaseModel)
 
 _DEFAULT_LANGUAGE = "python"
-_LANGUAGE_BY_SUFFIX = {
-    ".py": "python",
-    ".pyi": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-    ".go": "go",
-    ".rs": "rust",
-    ".java": "java",
-    ".kt": "kotlin",
-    ".kts": "kotlin",
-    ".rb": "ruby",
-    ".php": "php",
-    ".cs": "csharp",
-    ".c": "c",
-    ".h": "c",
-    ".cc": "cpp",
-    ".cpp": "cpp",
-    ".cxx": "cpp",
-    ".hpp": "cpp",
-}
 _CONTEXT_PARTS = {
     "signature": ContextPart.SIGNATURE,
     "body": ContextPart.BODY,
@@ -110,10 +89,11 @@ def merge_meta(
 
 def language_for_path(path: str | None) -> str:
     """Infer a kernel language from a workspace-relative path without touching the filesystem."""
-    if path is None:
-        return _DEFAULT_LANGUAGE
-    suffix = PurePosixPath(path).suffix.casefold()
-    return _LANGUAGE_BY_SUFFIX.get(suffix, _DEFAULT_LANGUAGE)
+    return language_for_path_or_default(
+        path,
+        default=_DEFAULT_LANGUAGE,
+        languages_by_extension=TOOL_LANGUAGE_BY_EXTENSION,
+    )
 
 
 def target_path(target: CodeTarget) -> str | None:
@@ -198,6 +178,15 @@ def hover_model(data: object) -> HoverInfo | None:
     if isinstance(data, HoverInfo):
         return data
     return HoverInfo.model_validate(data)
+
+
+def stable_strings(values: object) -> list[str]:
+    """Return deterministic strings for enum-like iterable values."""
+    if isinstance(values, (str, bytes, bytearray)):
+        return [str(values)]
+    if not isinstance(values, Iterable):
+        return []
+    return sorted(str(getattr(item, "value", item)) for item in values)
 
 
 def first_sources(*results: ToolResult[object]) -> list[str]:

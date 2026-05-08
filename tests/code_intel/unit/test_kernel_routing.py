@@ -315,3 +315,44 @@ def test_symbol_search_uses_attached_symbol_index_before_providers(
             await store.close()
 
     _run(scenario())
+
+
+def test_document_symbols_uses_attached_symbol_index_before_providers(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        content = "def Alpha():\n    return 1\n"
+        symbol = _indexed_symbol(name="Alpha", qualified_name="Alpha", content=content)
+        provider = RoutingProvider(
+            name="provider-document-symbols",
+            capabilities={Capability.DOCUMENT_SYMBOLS},
+            languages={"python"},
+            confidence=ConfidenceClass.HIGH,
+            health_score=1.0,
+            result="provider-result",
+        )
+        store = SymbolIndexStore(tmp_path / "symbols.db")
+        try:
+            await store.initialize()
+            await store.store_symbols(_metadata(symbol.path, content), [symbol])
+            kernel = CodeIntelKernel(
+                [provider], symbol_index=store, workspace_root=tmp_path
+            )
+
+            result = await kernel.call(
+                Capability.DOCUMENT_SYMBOLS,
+                "python",
+                path=symbol.path,
+            )
+
+            symbols = cast(list[Symbol], result.data)
+            assert result.ok is True
+            assert [item.id for item in symbols] == [symbol.id]
+            assert result.meta.sources_used == ["symbol_index"]
+            assert provider.health_calls == 0
+            assert kernel.last_trace is not None
+            assert kernel.last_trace.selected_provider == "symbol_index"
+        finally:
+            await store.close()
+
+    _run(scenario())

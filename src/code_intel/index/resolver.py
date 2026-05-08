@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import bisect
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,8 +12,17 @@ from src.code_intel.core import (
     Symbol,
     SymbolNotFound,
     TextAnchor,
+    read_source_text,
 )
-from src.code_intel.core.models import validate_workspace_relative_path
+from src.code_intel.core.models import (
+    offsets_for_range,
+    range_contains,
+    range_from_offsets,
+    range_size as _range_size,
+    range_sort_key,
+    text_for_range,
+    validate_workspace_relative_path,
+)
 
 from .store import SymbolIndexStore
 
@@ -153,20 +160,7 @@ class IndexBackedTargetResolver:
         return _innermost_symbol_containing_range(symbols, location.range)
 
     async def _read_text(self, path: str) -> str:
-        relative_path = validate_workspace_relative_path(path)
-        absolute_path = (self.workspace_root / relative_path).resolve(strict=False)
-        try:
-            _ = absolute_path.relative_to(self.workspace_root)
-        except ValueError as error:
-            raise SymbolNotFound("anchor path escaped workspace") from error
-
-        def read_sync() -> str:
-            return absolute_path.read_text(encoding="utf-8", errors="replace")
-
-        try:
-            return await asyncio.to_thread(read_sync)
-        except OSError as error:
-            raise SymbolNotFound("anchor source file is unavailable") from error
+        return await read_source_text(self.workspace_root, path, "anchor")
 
 
 def _location_for_symbol(symbol: Symbol) -> Location:
@@ -191,7 +185,7 @@ def _resolve_symbol_anchor(
         return None
     if not candidates:
         return None
-    ordered = sorted(candidates, key=lambda symbol: _range_sort_key(symbol.range))
+    ordered = sorted(candidates, key=lambda symbol: range_sort_key(symbol.range))
     if anchor.occurrence is not None:
         if anchor.occurrence >= len(ordered):
             return None
@@ -265,78 +259,6 @@ def _innermost_symbol_containing_range(
     if not candidates:
         return None
     return min(candidates, key=lambda symbol: _range_size(symbol.range))
-
-
-def range_contains(outer: Range, inner: Range) -> bool:
-    return (outer.start_line, outer.start_col) <= (
-        inner.start_line,
-        inner.start_col,
-    ) and (inner.end_line, inner.end_col,) <= (outer.end_line, outer.end_col)
-
-
-def text_for_range(content: str, source_range: Range) -> str:
-    start, end = offsets_for_range(content, source_range)
-    return content[start:end]
-
-
-def offsets_for_range(content: str, source_range: Range) -> tuple[int, int]:
-    line_starts = _line_starts(content)
-    return (
-        _position_to_offset(
-            content, line_starts, source_range.start_line, source_range.start_col
-        ),
-        _position_to_offset(
-            content, line_starts, source_range.end_line, source_range.end_col
-        ),
-    )
-
-
-def range_from_offsets(content: str, start: int, end: int) -> Range:
-    line_starts = _line_starts(content)
-    start_line, start_col = _offset_to_position(line_starts, start)
-    end_line, end_col = _offset_to_position(line_starts, end)
-    return Range(
-        start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col
-    )
-
-
-def _line_starts(content: str) -> list[int]:
-    starts = [0]
-    for index, character in enumerate(content):
-        if character == "\n":
-            starts.append(index + 1)
-    return starts
-
-
-def _position_to_offset(
-    content: str, line_starts: list[int], line: int, column: int
-) -> int:
-    if line >= len(line_starts):
-        return len(content)
-    line_start = line_starts[line]
-    line_end = line_starts[line + 1] if line + 1 < len(line_starts) else len(content)
-    return min(line_start + column, line_end)
-
-
-def _offset_to_position(line_starts: list[int], offset: int) -> tuple[int, int]:
-    line = max(0, bisect.bisect_right(line_starts, offset) - 1)
-    return line, offset - line_starts[line]
-
-
-def _range_size(source_range: Range) -> tuple[int, int]:
-    return (
-        source_range.end_line - source_range.start_line,
-        source_range.end_col - source_range.start_col,
-    )
-
-
-def _range_sort_key(source_range: Range) -> tuple[int, int, int, int]:
-    return (
-        source_range.start_line,
-        source_range.start_col,
-        source_range.end_line,
-        source_range.end_col,
-    )
 
 
 __all__ = [

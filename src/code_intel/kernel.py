@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import inspect
 import time
-from collections.abc import Awaitable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, TypeVar, cast
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +52,9 @@ _SEMANTIC_PLACEHOLDER_CAPABILITIES = {
     Capability.REFERENCES,
     Capability.HOVER,
 }
+
+
+ProviderCheckT = TypeVar("ProviderCheckT")
 
 
 class _DynamicMethod(Protocol):
@@ -247,50 +250,38 @@ class CodeIntelKernel:
 
         for provider in self._providers:
             provider_name = self._provider_name(provider)
-            try:
-                supported = await self._supports(
+            supported, failure = await self._safe_provider_check(
+                provider_name,
+                lambda provider=provider: self._supports(
                     provider, requested_capability, language
-                )
-            except CodeIntelError as error:
-                unavailable_records.append(
-                    self._failed_attempt(provider_name, error.code)
-                )
+                ),
+            )
+            if failure is not None:
+                unavailable_records.append(failure)
                 continue
-            except Exception:
-                unavailable_records.append(
-                    self._failed_attempt(provider_name, CodeIntelError.code)
-                )
-                continue
-
             if not supported:
                 continue
 
-            try:
-                health = await self._health(provider)
-            except CodeIntelError as error:
-                unavailable_records.append(
-                    self._failed_attempt(provider_name, error.code)
-                )
+            health, failure = await self._safe_provider_check(
+                provider_name, lambda provider=provider: self._health(provider)
+            )
+            if failure is not None:
+                unavailable_records.append(failure)
                 continue
-            except Exception:
-                unavailable_records.append(
-                    self._failed_attempt(provider_name, CodeIntelError.code)
-                )
+            if health is None:
                 continue
 
-            try:
-                confidence = await self._confidence_for(
+            confidence, failure = await self._safe_provider_check(
+                provider_name,
+                lambda provider=provider: self._confidence_for(
                     provider, requested_capability, language
-                )
-            except CodeIntelError as error:
-                unavailable_records.append(
-                    self._failed_attempt(provider_name, error.code, health)
-                )
+                ),
+                health=health,
+            )
+            if failure is not None:
+                unavailable_records.append(failure)
                 continue
-            except Exception:
-                unavailable_records.append(
-                    self._failed_attempt(provider_name, CodeIntelError.code, health)
-                )
+            if confidence is None:
                 continue
 
             attempt = ProviderAttemptTrace(
@@ -368,7 +359,8 @@ class CodeIntelKernel:
         kwargs: dict[str, object],
         started_at: float,
     ) -> ToolResult[object] | None:
-        if self._symbol_index is None:
+        symbol_index = self._symbol_index
+        if symbol_index is None:
             return None
 
         if capability == Capability.SYMBOL_SEARCH:
@@ -382,61 +374,40 @@ class CodeIntelKernel:
                 kind = self._coerce_symbol_kind(kwargs.get("kind"))
             except ValueError:
                 return None
-            with trace_span(
+
+            async def symbol_search() -> ToolResult[object]:
+                await symbol_index.initialize()
+                symbols = await symbol_index.search_symbols(
+                    query, kind=kind, limit=limit
+                )
+                return self._index_success_result(symbols, started_at)
+
+            return await self._run_index_operation(
                 "code_intel.provider.symbol_index.symbol_search",
-                {
-                    "provider_name": _INDEX_PROVIDER_NAME,
-                    "capability": capability.value,
-                },
-            ) as span:
-                try:
-                    await self._symbol_index.initialize()
-                    symbols = await self._symbol_index.search_symbols(
-                        query, kind=kind, limit=limit
-                    )
-                except CodeIntelError as error:
-                    result = self._index_error_result(error, started_at)
-                    span.add_metadata(self._result_trace_metadata(result))
-                    return result
-                except Exception:
-                    result = self._index_error_result(CodeIntelError(), started_at)
-                    span.add_metadata(self._result_trace_metadata(result))
-                    return result
-                result = self._index_success_result(symbols, started_at)
-                span.add_metadata(self._result_trace_metadata(result))
-                return result
+                {"capability": capability.value},
+                started_at,
+                symbol_search,
+            )
 
         if capability == Capability.DOCUMENT_SYMBOLS:
             path = kwargs.get("path")
             if not isinstance(path, str):
                 return None
-            with trace_span(
-                "code_intel.provider.symbol_index.document_symbols",
-                {
-                    "provider_name": _INDEX_PROVIDER_NAME,
-                    "capability": capability.value,
-                    "path": path,
-                },
-            ) as span:
-                try:
-                    await self._symbol_index.initialize()
-                    symbols = await self._symbol_index.get_symbols(path)
-                except CodeIntelError as error:
-                    result = self._index_error_result(error, started_at)
-                    span.add_metadata(self._result_trace_metadata(result))
-                    return result
-                except Exception:
-                    result = self._index_error_result(CodeIntelError(), started_at)
-                    span.add_metadata(self._result_trace_metadata(result))
-                    return result
-                result = self._index_success_result(symbols, started_at)
-                span.add_metadata(self._result_trace_metadata(result))
-                return result
 
-        if (
-            capability == Capability.CONTEXT_EXTRACT
-            and self._context_extractor is not None
-        ):
+            async def document_symbols() -> ToolResult[object]:
+                await symbol_index.initialize()
+                symbols = await symbol_index.get_symbols(path)
+                return self._index_success_result(symbols, started_at)
+
+            return await self._run_index_operation(
+                "code_intel.provider.symbol_index.document_symbols",
+                {"capability": capability.value, "path": path},
+                started_at,
+                document_symbols,
+            )
+
+        context_extractor = self._context_extractor
+        if capability == Capability.CONTEXT_EXTRACT and context_extractor is not None:
             target = kwargs.get("target")
             include = self._coerce_context_parts(kwargs.get("include"))
             max_tokens = kwargs.get("max_tokens")
@@ -446,36 +417,49 @@ class CodeIntelKernel:
                 or not isinstance(max_tokens, int)
             ):
                 return None
-            with trace_span(
-                "code_intel.provider.symbol_index.context_extract",
-                {
-                    "provider_name": _INDEX_PROVIDER_NAME,
-                    "capability": capability.value,
-                    **self._target_trace_metadata(target),
-                },
-            ) as span:
-                try:
-                    context, flags = await self._context_extractor.extract_context(
-                        target, include, max_tokens
-                    )
-                except CodeIntelError as error:
-                    result = self._index_error_result(error, started_at)
-                    span.add_metadata(self._result_trace_metadata(result))
-                    return result
-                except Exception:
-                    result = self._index_error_result(CodeIntelError(), started_at)
-                    span.add_metadata(self._result_trace_metadata(result))
-                    return result
-                result = self._index_success_result(
+
+            async def context_extract() -> ToolResult[object]:
+                context, flags = await context_extractor.extract_context(
+                    target, include, max_tokens
+                )
+                return self._index_success_result(
                     context,
                     started_at,
                     truncated=context.truncated,
                     flags=list(flags),
                 )
-                span.add_metadata(self._result_trace_metadata(result))
-                return result
+
+            return await self._run_index_operation(
+                "code_intel.provider.symbol_index.context_extract",
+                {
+                    "capability": capability.value,
+                    **self._target_trace_metadata(target),
+                },
+                started_at,
+                context_extract,
+            )
 
         return None
+
+    async def _run_index_operation(
+        self,
+        span_name: str,
+        metadata: Mapping[str, object],
+        started_at: float,
+        operation: Callable[[], Awaitable[ToolResult[object]]],
+    ) -> ToolResult[object]:
+        with trace_span(
+            span_name,
+            {"provider_name": _INDEX_PROVIDER_NAME, **metadata},
+        ) as span:
+            try:
+                result = await operation()
+            except CodeIntelError as error:
+                result = self._index_error_result(error, started_at)
+            except Exception:
+                result = self._index_error_result(CodeIntelError(), started_at)
+            span.add_metadata(self._result_trace_metadata(result))
+            return result
 
     @staticmethod
     def _coerce_symbol_kind(value: object) -> SymbolKind | None:
@@ -548,6 +532,22 @@ class CodeIntelKernel:
             )
         ]
         trace.selected_provider = _INDEX_PROVIDER_NAME if selected else None
+
+    async def _safe_provider_check(
+        self,
+        provider_name: str,
+        operation: Callable[[], Awaitable[ProviderCheckT]],
+        *,
+        health: ProviderHealth | None = None,
+    ) -> tuple[ProviderCheckT | None, ProviderAttemptTrace | None]:
+        try:
+            return await operation(), None
+        except CodeIntelError as error:
+            return None, self._failed_attempt(provider_name, error.code, health)
+        except Exception:
+            return None, self._failed_attempt(
+                provider_name, CodeIntelError.code, health
+            )
 
     @staticmethod
     def _failed_attempt(

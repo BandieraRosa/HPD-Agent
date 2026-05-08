@@ -6,13 +6,15 @@ import asyncio
 import inspect
 import re
 from collections.abc import Awaitable, Iterable, Mapping, Sequence
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel, Field
 
 from src.code_intel.core import Capability, Diagnostic, ToolError, ToolResult
+from src.code_intel.core.languages import language_for_path_or_default
 from src.code_intel.core.models import validate_workspace_relative_path
+from src.code_intel.tools._helpers import stable_strings
 from src.code_intel.tools.models import ChecksSkipped, CodeVerifyData
 from src.code_intel.verifier import (
     BaselineSnapshot,
@@ -43,16 +45,6 @@ _APPLY_RESULT_PATH_RE = re.compile(
     r"^- (?:Add|Update|Replace|Delete): (?P<path>.+?) \(\+\d+/-\d+, final \d+ bytes\)$",
     re.MULTILINE,
 )
-_LANGUAGE_BY_SUFFIX = {
-    ".py": "python",
-    ".pyi": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-}
 
 
 class KernelLike(Protocol):
@@ -462,8 +454,8 @@ def provider_identity_for_kernel(kernel: object) -> tuple[str, str]:
             {
                 "name": provider_name,
                 "class": f"{provider.__class__.__module__}.{provider.__class__.__qualname__}",
-                "capabilities": _stable_strings(getattr(provider, "capabilities", ())),
-                "languages": _stable_strings(getattr(provider, "languages", ())),
+                "capabilities": stable_strings(getattr(provider, "capabilities", ())),
+                "languages": stable_strings(getattr(provider, "languages", ())),
             }
         )
     provider_id = (
@@ -696,15 +688,7 @@ def _unique_valid_paths(paths: Iterable[str]) -> list[str]:
 
 
 def _language_for_path(path: str) -> str:
-    return _LANGUAGE_BY_SUFFIX.get(PurePosixPath(path).suffix.casefold(), "python")
-
-
-def _stable_strings(values: object) -> list[str]:
-    if isinstance(values, (str, bytes, bytearray)):
-        return [str(values)]
-    if not isinstance(values, Iterable):
-        return []
-    return sorted(str(getattr(item, "value", item)) for item in values)
+    return language_for_path_or_default(path)
 
 
 __all__ = [
