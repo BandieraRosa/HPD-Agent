@@ -12,26 +12,14 @@ from tree_sitter import Language, Node, Parser, Query, QueryCursor
 from tree_sitter_language_pack import get_language, get_parser
 
 from src.code_intel.core import ProviderUnavailable, Range, Symbol, SymbolKind
+from src.code_intel.core.languages import SUPPORTED_CODE_LANGUAGES, language_for_path
 from src.code_intel.core.models import validate_workspace_relative_path
 
 TREE_SITTER_QUERY_VERSION = "tree-sitter-query-v1"
 TREE_SITTER_INDEX_VERSION = f"tree-sitter:{TREE_SITTER_QUERY_VERSION}"
 TREE_SITTER_SOURCE = "tree_sitter"
 TREE_SITTER_CONFIDENCE = 0.72
-SUPPORTED_LANGUAGES = frozenset({"python", "typescript", "javascript"})
-
-_EXTENSION_TO_LANGUAGE = {
-    ".py": "python",
-    ".pyi": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".mts": "typescript",
-    ".cts": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-}
+SUPPORTED_LANGUAGES = SUPPORTED_CODE_LANGUAGES
 
 _CAPTURE_KINDS = {
     "class.definition": SymbolKind.CLASS,
@@ -158,7 +146,7 @@ class TreeSitterParser:
                 f"unsupported language: {requested_language}"
             )
         suffix = Path(path).suffix.casefold()
-        language = _EXTENSION_TO_LANGUAGE.get(suffix)
+        language = language_for_path(path)
         if language is None:
             raise TreeSitterGrammarUnavailable(
                 f"unsupported path extension: {suffix or '<none>'}"

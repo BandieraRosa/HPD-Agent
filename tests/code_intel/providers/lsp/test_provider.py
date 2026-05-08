@@ -299,6 +299,12 @@ class _FreshDiagnosticsClient:
     def diagnostics_version(self, path: str) -> int:
         return self._versions.get(path, 0)
 
+    def published_diagnostics_version(self, path: str) -> int:
+        return self._versions.get(path, 0)
+
+    def published_document_version(self, path: str) -> int | None:
+        return self._document_versions.get(path)
+
     async def wait_for_diagnostics(
         self,
         path: str,
@@ -577,6 +583,26 @@ def test_diagnostics_missing_unsynced_file_reports_safe_read_error(
     _run(scenario())
 
 
+def test_provider_invalid_workspace_path_is_provider_unavailable(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        workspace = _write_workspace(tmp_path)
+        provider = LSPProvider(
+            workspace,
+            manager=LSPManager(workspace, specs=[_fake_spec()]),
+        )
+        try:
+            with pytest.raises(ProviderUnavailable) as raised:
+                _ = await provider.document_symbols("../outside.py")
+        finally:
+            await provider.shutdown()
+
+        assert "invalid LSP workspace path" in str(raised.value)
+
+    _run(scenario())
+
+
 def test_provider_refuses_unadvertised_semantic_operation_without_requesting_it(
     tmp_path: Path,
 ) -> None:
@@ -639,7 +665,7 @@ def test_concurrent_notify_did_change_serializes_versions(tmp_path: Path) -> Non
         )
         try:
             await provider.notify_did_open("src/mock.py", "first")
-            await asyncio.gather(
+            _ = await asyncio.gather(
                 provider.notify_did_change("src/mock.py", "second"),
                 provider.notify_did_change("src/mock.py", "third"),
             )
@@ -679,7 +705,7 @@ def test_diagnostics_waits_after_semantic_operation_opens_document(
         assert len(client.did_open_calls) == 1
         assert client.did_change_calls == []
         assert diagnostics[0].message == "snapshot:def mock_function():"
-        assert client._document_versions["src/mock.py"] == 1
+        assert client.published_document_version("src/mock.py") == 1
 
     _run(scenario())
 
@@ -719,8 +745,8 @@ def test_diagnostics_waits_after_semantic_change_with_versionless_publish(
         assert second[0].message == "snapshot:def changed_function():"
         assert len(client.did_open_calls) == 1
         assert len(client.did_change_calls) == 1
-        assert client._versions["src/mock.py"] == 2
-        assert client._document_versions["src/mock.py"] is None
+        assert client.published_diagnostics_version("src/mock.py") == 2
+        assert client.published_document_version("src/mock.py") is None
 
     _run(scenario())
 
@@ -819,8 +845,8 @@ def test_diagnostics_rejects_stale_versioned_publish_after_change(
         assert first[0].message == "snapshot:def mock_function():"
         assert len(client.did_change_calls) == 1
         assert client.did_change_calls[0][2] == 2
-        assert client._versions["src/mock.py"] == 2
-        assert client._document_versions["src/mock.py"] == 1
+        assert client.published_diagnostics_version("src/mock.py") == 2
+        assert client.published_document_version("src/mock.py") == 1
 
     _run(scenario())
 

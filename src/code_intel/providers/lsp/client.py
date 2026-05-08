@@ -24,8 +24,9 @@ from src.code_intel.core import (
     SymbolKind,
 )
 from src.code_intel.core.errors import CodeIntelError
-from src.code_intel.core.models import validate_workspace_relative_path
 from src.code_intel.tracing import result_count, trace_span
+
+from ._paths import validate_lsp_workspace_path
 
 LSP_SYMBOL_SOURCE = "lsp"
 LSP_SYMBOL_INDEX_VERSION = "lsp:document-symbol-v1"
@@ -119,7 +120,7 @@ class LSPClient:
     async def did_open(
         self, path: str, *, language_id: str, text: str, version: int
     ) -> None:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         params = lsp_types.DidOpenTextDocumentParams(
             text_document=lsp_types.TextDocumentItem(
                 uri=self._path_to_uri(relative_path),
@@ -131,7 +132,7 @@ class LSPClient:
         await self._notify_typed(lsp_types.TEXT_DOCUMENT_DID_OPEN, params)
 
     async def did_change(self, path: str, *, text: str, version: int) -> None:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         params = lsp_types.DidChangeTextDocumentParams(
             text_document=lsp_types.VersionedTextDocumentIdentifier(
                 uri=self._path_to_uri(relative_path),
@@ -144,7 +145,7 @@ class LSPClient:
         await self._notify_typed(lsp_types.TEXT_DOCUMENT_DID_CHANGE, params)
 
     async def did_save(self, path: str, *, text: str | None = None) -> None:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         params = lsp_types.DidSaveTextDocumentParams(
             text_document=lsp_types.TextDocumentIdentifier(
                 uri=self._path_to_uri(relative_path)
@@ -156,7 +157,7 @@ class LSPClient:
     async def goto_definition(
         self, path: str, *, line: int, character: int
     ) -> list[Location]:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         params = lsp_types.DefinitionParams(
             text_document=lsp_types.TextDocumentIdentifier(
                 uri=self._path_to_uri(relative_path)
@@ -174,7 +175,7 @@ class LSPClient:
         character: int,
         include_declaration: bool = True,
     ) -> list[Location]:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         params = lsp_types.ReferenceParams(
             text_document=lsp_types.TextDocumentIdentifier(
                 uri=self._path_to_uri(relative_path)
@@ -186,7 +187,7 @@ class LSPClient:
         return self._reference_locations(result)
 
     async def hover(self, path: str, *, line: int, character: int) -> HoverInfo | None:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         params = lsp_types.HoverParams(
             text_document=lsp_types.TextDocumentIdentifier(
                 uri=self._path_to_uri(relative_path)
@@ -210,7 +211,7 @@ class LSPClient:
 
     async def document_symbols(self, path: str) -> list[Symbol]:
         await self.start()
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         params = lsp_types.DocumentSymbolParams(
             text_document=lsp_types.TextDocumentIdentifier(
                 uri=self._path_to_uri(relative_path)
@@ -252,12 +253,12 @@ class LSPClient:
         return symbols
 
     async def diagnostics(self, path: str) -> list[Diagnostic]:
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         return list(self._diagnostics_by_path.get(relative_path, ()))
 
     def diagnostics_version(self, path: str) -> int:
         """Return the publishDiagnostics snapshot version for a path."""
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         return self._diagnostics_versions.get(relative_path, 0)
 
     async def wait_for_diagnostics(
@@ -269,7 +270,7 @@ class LSPClient:
         document_version: int | None = None,
     ) -> bool:
         """Wait for a publishDiagnostics snapshot fresh enough for a document version."""
-        relative_path = self._validate_path(path)
+        relative_path = validate_lsp_workspace_path(path)
         if (
             after_version is None
             and document_version is None
@@ -337,6 +338,14 @@ class LSPClient:
     async def _request_typed(
         self, method: str, params: object | None = None
     ) -> object | None:
+        return await self._transport_operation(method, params, request=True)
+
+    async def _notify_typed(self, method: str, params: object | None = None) -> None:
+        _ = await self._transport_operation(method, params, request=False)
+
+    async def _transport_operation(
+        self, method: str, params: object | None, *, request: bool
+    ) -> object | None:
         with trace_span(
             f"lsp.{self._source}.{method}",
             {"provider_name": self._source, "language": self._language},
@@ -345,33 +354,20 @@ class LSPClient:
                 payload = (
                     None if params is None else self._converter.unstructure(params)
                 )
-                result = await self._transport.request(method, payload)
-                span.add_metadata({"result_count": result_count(result)})
-                return result
+                if request:
+                    result = await self._transport.request(method, payload)
+                    span.add_metadata({"result_count": result_count(result)})
+                    return result
+                await self._transport.notify(method, payload)
+                span.add_metadata({"result_count": 0})
+                return None
             except (LSPTimeout, ProviderUnavailable):
                 raise
             except CodeIntelError:
                 raise
             except Exception:
-                raise ProviderUnavailable("LSP client request failed") from None
-
-    async def _notify_typed(self, method: str, params: object | None = None) -> None:
-        with trace_span(
-            f"lsp.{self._source}.{method}",
-            {"provider_name": self._source, "language": self._language},
-        ) as span:
-            try:
-                payload = (
-                    None if params is None else self._converter.unstructure(params)
-                )
-                await self._transport.notify(method, payload)
-                span.add_metadata({"result_count": 0})
-            except ProviderUnavailable:
-                raise
-            except CodeIntelError:
-                raise
-            except Exception:
-                raise ProviderUnavailable("LSP client notification failed") from None
+                operation = "request" if request else "notification"
+                raise ProviderUnavailable(f"LSP client {operation} failed") from None
 
     async def _handle_publish_diagnostics(self, params_payload: object | None) -> None:
         if params_payload is None:
@@ -638,16 +634,9 @@ class LSPClient:
         if not relative or relative == ".":
             return None
         try:
-            return validate_workspace_relative_path(relative)
-        except ValueError:
+            return validate_lsp_workspace_path(relative)
+        except ProviderUnavailable:
             return None
-
-    @staticmethod
-    def _validate_path(path: str) -> str:
-        try:
-            return validate_workspace_relative_path(path)
-        except ValueError:
-            raise ProviderUnavailable("invalid LSP workspace path") from None
 
 
 __all__ = [

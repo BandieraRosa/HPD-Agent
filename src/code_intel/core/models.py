@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 from enum import Enum
 from typing import Generic, TypeVar
@@ -44,6 +45,22 @@ class Range(BaseModel):
         return self
 
 
+def range_contains(outer: Range, inner: Range) -> bool:
+    """Return whether outer fully contains inner using half-open coordinates."""
+    return (outer.start_line, outer.start_col) <= (
+        inner.start_line,
+        inner.start_col,
+    ) and (inner.end_line, inner.end_col) <= (outer.end_line, outer.end_col)
+
+
+def range_size(source_range: Range) -> tuple[int, int]:
+    """Return line and column span for sorting nested ranges."""
+    return (
+        source_range.end_line - source_range.start_line,
+        source_range.end_col - source_range.start_col,
+    )
+
+
 class Location(BaseModel):
     """Workspace-relative source location."""
 
@@ -78,6 +95,71 @@ class DiagnosticSeverity(str, Enum):
     WARNING = "warning"
     INFO = "info"
     HINT = "hint"
+
+
+DIAGNOSTIC_SEVERITIES = tuple(severity.value for severity in DiagnosticSeverity)
+
+
+def text_for_range(content: str, source_range: Range) -> str:
+    """Return the source substring covered by a half-open range."""
+    start, end = offsets_for_range(content, source_range)
+    return content[start:end]
+
+
+def offsets_for_range(content: str, source_range: Range) -> tuple[int, int]:
+    """Convert a source range to half-open string offsets."""
+    line_starts = _line_starts(content)
+    return (
+        _position_to_offset(
+            content, line_starts, source_range.start_line, source_range.start_col
+        ),
+        _position_to_offset(
+            content, line_starts, source_range.end_line, source_range.end_col
+        ),
+    )
+
+
+def range_from_offsets(content: str, start: int, end: int) -> Range:
+    """Convert half-open string offsets to a source range."""
+    line_starts = _line_starts(content)
+    start_line, start_col = _offset_to_position(line_starts, start)
+    end_line, end_col = _offset_to_position(line_starts, end)
+    return Range(
+        start_line=start_line, start_col=start_col, end_line=end_line, end_col=end_col
+    )
+
+
+def _line_starts(content: str) -> list[int]:
+    starts = [0]
+    for index, character in enumerate(content):
+        if character == "\n":
+            starts.append(index + 1)
+    return starts
+
+
+def _position_to_offset(
+    content: str, line_starts: list[int], line: int, column: int
+) -> int:
+    if line >= len(line_starts):
+        return len(content)
+    line_start = line_starts[line]
+    line_end = line_starts[line + 1] if line + 1 < len(line_starts) else len(content)
+    return min(line_start + column, line_end)
+
+
+def _offset_to_position(line_starts: list[int], offset: int) -> tuple[int, int]:
+    line = max(0, bisect.bisect_right(line_starts, offset) - 1)
+    return line, offset - line_starts[line]
+
+
+def range_sort_key(source_range: Range) -> tuple[int, int, int, int]:
+    """Return a stable source-order sort key for a range."""
+    return (
+        source_range.start_line,
+        source_range.start_col,
+        source_range.end_line,
+        source_range.end_col,
+    )
 
 
 class Symbol(BaseModel):
@@ -268,11 +350,14 @@ class HoverInfo(BaseModel):
 
 __all__ = [
     "CodeContext",
+    "DIAGNOSTIC_SEVERITIES",
     "Diagnostic",
     "DiagnosticSeverity",
     "HoverInfo",
     "Location",
     "Range",
+    "range_contains",
+    "range_size",
     "Symbol",
     "SymbolKind",
     "ToolError",

@@ -14,6 +14,7 @@ from pathspec import PathSpec
 from pathspec.pattern import Pattern
 
 from src.code_intel.core import IndexStale, Symbol
+from src.code_intel.core.languages import LANGUAGE_BY_EXTENSION
 from src.code_intel.core.models import validate_workspace_relative_path
 from src.code_intel.tracing import trace_span
 
@@ -55,18 +56,6 @@ _SECRET_NAME_PARTS = {
     "token",
     "apikey",
     "api_key",
-}
-_EXTENSION_TO_LANGUAGE = {
-    ".py": "python",
-    ".pyi": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".mts": "typescript",
-    ".cts": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
 }
 
 
@@ -170,7 +159,7 @@ class SymbolIndexer:
         self.schema_version: str = schema_version
         self.max_file_size_bytes: int = max(1, max_file_size_bytes)
         self.languages_by_extension: dict[str, str] = dict(
-            languages_by_extension or _EXTENSION_TO_LANGUAGE
+            languages_by_extension or LANGUAGE_BY_EXTENSION
         )
 
     async def index_workspace(self) -> WorkspaceIndexResult:

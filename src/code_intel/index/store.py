@@ -377,18 +377,7 @@ class SymbolIndexStore:
             if row is None:
                 span.add_metadata({"cache_hit": False, "result_count": 0})
                 return None
-            entry = SymbolHistoryEntry(
-                symbol_id=str(row["symbol_id"]),
-                language=str(row["language"]),
-                path=str(row["path"]),
-                qualified_name=str(row["qualified_name"]),
-                file_hash=str(row["file_hash"]),
-                kind=_symbol_kind_or_none(row["kind"]),
-                selection_start_line=_optional_int(row["selection_start_line"]),
-                selection_start_col=_optional_int(row["selection_start_col"]),
-                created_at=_to_float(row["created_at"]),
-                last_seen_at=_to_float(row["last_seen_at"]),
-            )
+            entry = _history_entry_from_row(row)
             span.add_metadata(
                 {
                     "cache_hit": True,
@@ -412,21 +401,7 @@ class SymbolIndexStore:
                 """),
         )
         with trace_span("code_intel.index.history_entries") as span:
-            entries = [
-                SymbolHistoryEntry(
-                    symbol_id=str(row["symbol_id"]),
-                    language=str(row["language"]),
-                    path=str(row["path"]),
-                    qualified_name=str(row["qualified_name"]),
-                    file_hash=str(row["file_hash"]),
-                    kind=_symbol_kind_or_none(row["kind"]),
-                    selection_start_line=_optional_int(row["selection_start_line"]),
-                    selection_start_col=_optional_int(row["selection_start_col"]),
-                    created_at=_to_float(row["created_at"]),
-                    last_seen_at=_to_float(row["last_seen_at"]),
-                )
-                for row in rows
-            ]
+            entries = [_history_entry_from_row(row) for row in rows]
             span.add_metadata({"result_count": len(entries)})
             return entries
 
@@ -836,6 +811,21 @@ def _indexed_file_from_row(row: _Row) -> IndexedFileMetadata:
         grammar_version=str(row["grammar_version"]),
         query_version=str(row["query_version"]),
         schema_version=str(row["schema_version"]),
+    )
+
+
+def _history_entry_from_row(row: _Row) -> SymbolHistoryEntry:
+    return SymbolHistoryEntry(
+        symbol_id=str(row["symbol_id"]),
+        language=str(row["language"]),
+        path=str(row["path"]),
+        qualified_name=str(row["qualified_name"]),
+        file_hash=str(row["file_hash"]),
+        kind=_symbol_kind_or_none(row["kind"]),
+        selection_start_line=_optional_int(row["selection_start_line"]),
+        selection_start_col=_optional_int(row["selection_start_col"]),
+        created_at=_to_float(row["created_at"]),
+        last_seen_at=_to_float(row["last_seen_at"]),
     )
 
 

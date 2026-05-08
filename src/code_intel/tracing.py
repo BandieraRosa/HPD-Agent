@@ -375,7 +375,7 @@ def _diagnostic_templates(value: object) -> list[str]:
         message = _diagnostic_message(item)
         if message is None:
             continue
-        template = _normalize_diagnostic_message(message)
+        template = normalize_diagnostic_message(message)
         if template and template not in templates:
             templates.append(template[:_MAX_DIAGNOSTIC_TEMPLATE_CHARS])
         if len(templates) >= _MAX_DIAGNOSTIC_TEMPLATES:
@@ -394,7 +394,8 @@ def _diagnostic_message(value: object) -> str | None:
     return message if isinstance(message, str) else None
 
 
-def _normalize_diagnostic_message(message: str) -> str:
+def normalize_diagnostic_message(message: str) -> str:
+    """Normalize diagnostic messages by replacing volatile values with placeholders."""
     normalized = _QUOTED_RE.sub("<quoted>", message)
     normalized = _LINE_COL_TUPLE_RE.sub("(<line>, <column>)", normalized)
     normalized = _LINE_COLON_RE.sub(":<line>:<column>", normalized)
@@ -421,6 +422,7 @@ __all__ = [
     "ALLOWED_TRACE_FIELDS",
     "CodeIntelTraceSpan",
     "redact",
+    "normalize_diagnostic_message",
     "result_count",
     "safe_error_metadata",
     "trace_span",
