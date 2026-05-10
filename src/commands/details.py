@@ -1,19 +1,36 @@
 COMMAND_DETAILS = {
-    "/context":   "View conversation context: /context [-c COUNT] [-d]",
-    "/exit":      "Exit the agent",
-    "/help":      "Show help for available commands",
+    "/context": "View conversation context: /context [-c COUNT] [-d]",
+    "/exit": "Exit the agent",
+    "/help": "Show help for available commands",
+    "/index": "\n".join([
+        "代码索引命令:",
+        "  /index status           — 查看索引状态，不自动构建",
+        "  /index build            — 构建或增量更新 symbol index",
+        "  /index clear            — 清理当前 workspace 的索引缓存",
+    ]),
     "/I!Love'You!": "Show some love",
-    "/model":     "Manage models:\n"
-                  "  /model list                — list all profiles\n"
-                  "  /model create             — create a new profile\n"
-                  "  /model switch <name>     — switch to a profile",
-    "/sessions":  "Manage sessions:\n"
-                  "  /sessions list             — list sessions for current project\n"
-                  "  /sessions create          — create a new session\n"
-                  "  /sessions switch <id>    — switch to a session\n"
-                  "  /sessions delete <id>   — delete a session",
-    "/skim":      "Scan project and generate HPD.MD: /skim [path]",
-    "/summary":   "Summarize current session and reset context",
-    "/tokens":    "Show context window token usage",
-    "/trace":     "Control tracing output: /trace [on|half|off]",
+    "/lsp": "\n".join([
+        "语言服务器 LSP 命令:",
+        "  /lsp status             — 查看运行状态，不启动 server",
+        "  /lsp start <language>   — 启动指定语言的 language server",
+        "  /lsp stop [language]    — 停止全部或指定语言 server",
+        "  /lsp restart <language> — 显式重启指定语言 server",
+    ]),
+    "/model": "\n".join([
+        "Manage models:",
+        "  /model list                — list all profiles",
+        "  /model create             — create a new profile",
+        "  /model switch <name>     — switch to a profile",
+    ]),
+    "/sessions": "\n".join([
+        "Manage sessions:",
+        "  /sessions list             — list sessions for current project",
+        "  /sessions create          — create a new session",
+        "  /sessions switch <id>    — switch to a session",
+        "  /sessions delete <id>   — delete a session",
+    ]),
+    "/skim": "Scan project and generate HPD.MD: /skim [path]",
+    "/summary": "Summarize current session and reset context",
+    "/tokens": "Show context window token usage",
+    "/trace": "Control tracing output: /trace [on|half|off]",
 }

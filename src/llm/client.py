@@ -9,6 +9,7 @@ the global TokenTrackerCallback accumulator.
 """
 
 import os
+from typing import Any, cast
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 
 from src.cli import get_renderer
 from src.core.observability import TokenTrackerCallback
+from src.tools.invocation import invoke_tool
 
 # ----------------------------------------------------------------------
 # Token-tracker (global singleton, populated by monkey-patches below)
@@ -36,10 +38,12 @@ def _install_token_tracker() -> None:
         for gen in result.generations:
             msg: AIMessage = gen.message
             usage = getattr(msg, "usage_metadata", None) or {}
-            tin  = usage.get("input_tokens", 0)
+            tin = usage.get("input_tokens", 0)
             tout = usage.get("output_tokens", 0)
             if tin or tout:
-                model = getattr(self, "model_name", "") or getattr(self, "model", "") or ""
+                model = (
+                    getattr(self, "model_name", "") or getattr(self, "model", "") or ""
+                )
                 _token_callback._accumulate(tin, tout, model)
         return result
 
@@ -53,13 +57,17 @@ def _install_token_tracker() -> None:
     original_convert = BaseChatOpenAI._convert_chunk_to_generation_chunk
 
     def tracked_convert(self, chunk, default_chunk_class, base_generation_info=None):
-        result = original_convert(self, chunk, default_chunk_class, base_generation_info)
+        result = original_convert(
+            self, chunk, default_chunk_class, base_generation_info
+        )
         chunk_usage = chunk.get("usage") if isinstance(chunk, dict) else None
         if chunk_usage:
             tin = chunk_usage.get("input_tokens", 0)
             tout = chunk_usage.get("output_tokens", 0)
             if tin or tout:
-                model = getattr(self, "model_name", "") or getattr(self, "model", "") or ""
+                model = (
+                    getattr(self, "model_name", "") or getattr(self, "model", "") or ""
+                )
                 _token_callback._accumulate(tin, tout, model)
         return result
 
@@ -101,7 +109,26 @@ def _resolve_api_key(profile_key: str) -> str:
 def _active_profile() -> object:
     """Import lazily to avoid circular imports at module startup."""
     from src.models import get_store
+
     return get_store().active_profile()
+
+
+_SOCKS_PROXY_KEYS = ("ALL_PROXY", "all_proxy")
+
+
+def _strip_socks_proxy() -> dict[str, str]:
+    """remove any SOCKS proxy settings from the environment, returning the stripped values for later restoration."""
+    stripped: dict[str, str] = {}
+    for key in _SOCKS_PROXY_KEYS:
+        val = os.environ.get(key, "")
+        if val.startswith(("socks://", "socks5://")):
+            stripped[key] = os.environ.pop(key)
+    return stripped
+
+
+def _restore_socks_proxy(stripped: dict[str, str]) -> None:
+    """restore any previously-stripped SOCKS proxy settings back into the environment."""
+    os.environ.update(stripped)
 
 
 def get_llm(
@@ -118,21 +145,48 @@ def get_llm(
     """
     profile = _active_profile()
 
-    actual_model = model if model is not None else (getattr(profile, "model", "deepseek-v4-flash") if profile else "deepseek-v4-flash")
-    actual_temp  = temperature if temperature is not None else (getattr(profile, "temperature", 0.0) if profile else 0.0)
-    actual_base  = base_url if base_url is not None else (getattr(profile, "base_url", "https://api.deepseek.com") if profile else "https://api.deepseek.com")
-    actual_key   = _resolve_api_key(getattr(profile, "api_key", "") if profile else "")
-    actual_eb    = getattr(profile, "extra_body", {}) if profile else {}
-
-    return ChatOpenAI(
-        model=actual_model,
-        temperature=actual_temp,
-        api_key=actual_key,
-        base_url=actual_base,
-        stream=stream,
-        extra_body=actual_eb,
-        request_timeout=60,
+    actual_model = (
+        model
+        if model is not None
+        else (
+            getattr(profile, "model", "deepseek-v4-flash")
+            if profile
+            else "deepseek-v4-flash"
+        )
     )
+    actual_temp = (
+        temperature
+        if temperature is not None
+        else (getattr(profile, "temperature", 0.0) if profile else 0.0)
+    )
+    actual_base = (
+        base_url
+        if base_url is not None
+        else (
+            getattr(profile, "base_url", "https://api.deepseek.com")
+            if profile
+            else "https://api.deepseek.com"
+        )
+    )
+    actual_key = _resolve_api_key(getattr(profile, "api_key", "") if profile else "")
+    actual_eb = getattr(profile, "extra_body", {}) if profile else {}
+
+    stripped = _strip_socks_proxy()
+    try:
+        return cast(
+            ChatOpenAI,
+            ChatOpenAI(
+                model=actual_model,
+                temperature=actual_temp,
+                api_key=actual_key,
+                base_url=actual_base,
+                streaming=stream,
+                extra_body=actual_eb,
+                timeout=60,
+            ),
+        )
+    finally:
+        _restore_socks_proxy(stripped)
 
 
 def get_structured_llm(
@@ -143,7 +197,9 @@ def get_structured_llm(
 ) -> ChatOpenAI:
     """Return an LLM bound to output a specific Pydantic schema."""
     llm = get_llm(model=model, temperature=temperature, base_url=base_url)
-    return llm.with_structured_output(schema, method="function_calling")
+    return cast(
+        ChatOpenAI, llm.with_structured_output(schema, method="function_calling")
+    )
 
 
 def get_llm_with_tools(
@@ -156,7 +212,7 @@ def get_llm_with_tools(
     """Build a ChatOpenAI client and bind tools to it."""
     llm = get_llm(model=model, temperature=temperature, base_url=base_url)
     if tools:
-        llm = llm.bind_tools(tools)
+        llm = cast(ChatOpenAI, llm.bind_tools(tools))
     return llm
 
 
@@ -210,11 +266,14 @@ async def invoke_with_tools(
     """
     _reset_seen_tool_call_ids()
     llm = get_llm_with_tools(
-        model=model, temperature=temperature, base_url=base_url,
-        tools=tools, stream=stream,
+        model=model,
+        temperature=temperature,
+        base_url=base_url,
+        tools=tools,
+        stream=stream,
     )
 
-    messages = [HumanMessage(content=prompt)]
+    messages: list[Any] = [HumanMessage(content=prompt)]
     tool_results: list[str] = []
     full_content = ""
     active_model = ""
@@ -225,7 +284,7 @@ async def invoke_with_tools(
 
         usage = getattr(response, "usage_metadata", None) or {}
         if usage:
-            input_tokens  = usage.get("input_tokens", 0)
+            input_tokens = usage.get("input_tokens", 0)
             output_tokens = usage.get("output_tokens", 0)
             if input_tokens or output_tokens:
                 active_model = getattr(llm, "model_name", "")
@@ -283,12 +342,27 @@ async def invoke_with_tools(
                     cmd = args.get("cmd", "")
                     print(f"[DEBUG] Tool '{name}' → terminal command: {cmd}")
                     safe_prefixes = (
-                        "pwd", "ls", "cat", "echo", "date", "whoami",
-                        "head", "tail", "less", "file ", "stat ",
-                        "uname", "id", "hostname", "env", "printenv",
+                        "pwd",
+                        "ls",
+                        "cat",
+                        "echo",
+                        "date",
+                        "whoami",
+                        "head",
+                        "tail",
+                        "less",
+                        "file ",
+                        "stat ",
+                        "uname",
+                        "id",
+                        "hostname",
+                        "env",
+                        "printenv",
                     )
-                    if cmd.strip().startswith(safe_prefixes) or cmd.strip().startswith("cd "):
-                        result = tool.invoke(args)
+                    if cmd.strip().startswith(safe_prefixes) or cmd.strip().startswith(
+                        "cd "
+                    ):
+                        result = await invoke_tool(tool, args)
                         success = not str(result).startswith("[Error]")
                     else:
                         confirm = get_renderer().confirm(f"Allow terminal command? {cmd}")
@@ -296,12 +370,14 @@ async def invoke_with_tools(
                             result = "[Cancelled] User declined to execute the terminal command"
                             print(f"[DEBUG] Tool '{name}' cancelled by user")
                         else:
-                            result = tool.invoke(args)
-                            success = not str(result).startswith("[Error]") and not str(result).startswith("[Cancelled]")
+                            result = await invoke_tool(tool, args)
+                            success = not str(result).startswith("[Error]") and not str(
+                                result
+                            ).startswith("[Cancelled]")
                             if not success:
                                 print(f"[DEBUG] Tool '{name}' failed: {result}")
                 else:
-                    result = tool.invoke(args)
+                    result = await invoke_tool(tool, args)
                     success = not str(result).startswith("[Error]")
                     if success:
                         print(f"[DEBUG] Tool '{name}' succeeded")
@@ -309,7 +385,9 @@ async def invoke_with_tools(
                         print(f"[DEBUG] Tool '{name}' failed:\n{str(result)[:4000]}")
 
             messages.append(AIMessage(content="", tool_calls=[call]))
-            messages.append(ToolMessage(name=name, content=str(result), tool_call_id=call_id))
+            messages.append(
+                ToolMessage(name=name, content=str(result), tool_call_id=call_id)
+            )
             args_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) if args else ""
             tool_results.append(f"[Tool: {name}({args_str})]\n{result}")
 

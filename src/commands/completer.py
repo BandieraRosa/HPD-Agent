@@ -3,9 +3,13 @@
 Dynamically updates model names and session IDs after the agent is initialized.
 """
 
-from typing import TYPE_CHECKING
+import sys
+from collections.abc import Iterator, Mapping
+from typing import TYPE_CHECKING, cast
 
-from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.document import Document
+from typing_extensions import override
 
 if TYPE_CHECKING:
     from src.agents import QueryAgent
@@ -19,8 +23,10 @@ class CommandCompleter(Completer):
     def set_agent(cls, agent: "QueryAgent") -> None:
         cls._agent_ref = agent
 
-    def get_completions(self, document, complete_event):
-        from src.commands import COMMAND_HANDLERS
+    @override
+    def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterator[Completion]:
+        _ = complete_event
+        command_names = _command_names()
 
         text = document.text_before_cursor
 
@@ -37,7 +43,7 @@ class CommandCompleter(Completer):
 
         # ── Level 1: top-level command ──────────────────────────────
         if len(parts) == 1 and not trailing_space:
-            for cmd in COMMAND_HANDLERS:
+            for cmd in command_names:
                 if cmd.startswith(parts[0]):
                     yield Completion(
                         cmd,
@@ -97,6 +103,45 @@ class CommandCompleter(Completer):
                         yield Completion(s, start_position=-len(sub))
             return
 
+
+        # ── /index sub-commands ───────────────────────────────────
+        if cmd == "/index":
+            index_subs = {
+                "status": "查看索引状态",
+                "build": "构建 symbol index",
+                "clear": "清理索引缓存",
+            }
+            if len(parts) == 1:
+                for s, meta in index_subs.items():
+                    yield Completion(s, start_position=0, display_meta=meta)
+            elif len(parts) == 2:
+                for s, meta in index_subs.items():
+                    if s.startswith(sub):
+                        yield Completion(s, start_position=-len(sub), display_meta=meta)
+            return
+
+        # ── /lsp sub-commands ─────────────────────────────────────
+        if cmd == "/lsp":
+            lsp_subs = {
+                "status": "查看 LSP 状态",
+                "stop": "停止 LSP server",
+                "restart": "重启指定语言 server",
+            }
+            lsp_languages = ("python", "typescript", "javascript")
+            if len(parts) == 1:
+                for s, meta in lsp_subs.items():
+                    yield Completion(s, start_position=0, display_meta=meta)
+            elif len(parts) == 2:
+                for s, meta in lsp_subs.items():
+                    if s.startswith(sub):
+                        yield Completion(s, start_position=-len(sub), display_meta=meta)
+            elif sub in ("restart", "stop") and len(parts) == 3:
+                language_prefix = parts[2].lower()
+                for language in lsp_languages:
+                    if language.startswith(language_prefix):
+                        yield Completion(language, start_position=-len(parts[2]), display_meta="语言标识")
+            return
+
         # ── /trace sub-commands ───────────────────────────────────
         if cmd == "/trace":
             trace_subs = ("on", "half", "off")
@@ -110,7 +155,7 @@ class CommandCompleter(Completer):
             return
 
         # ── Generic top-level command completion ────────────────────
-        for c in COMMAND_HANDLERS:
+        for c in command_names:
             if c.startswith(text) and c != cmd:
                 yield Completion(c, start_position=-len(text), display=c.lstrip("/"))
 
@@ -128,8 +173,20 @@ class CommandCompleter(Completer):
     def _session_ids() -> list[str]:
         if CommandCompleter._agent_ref is None:
             return []
-        agent = CommandCompleter._agent_ref
-        return list(agent._contexts.keys())
+        contexts = cast(object | None, getattr(CommandCompleter._agent_ref, "_contexts", None))
+        if not isinstance(contexts, Mapping):
+            return []
+        session_map = cast(Mapping[str, object], contexts)
+        return list(session_map.keys())
+
+
+def _command_names() -> tuple[str, ...]:
+    commands_module = cast(object | None, sys.modules.get("src.commands"))
+    handlers = cast(object | None, getattr(commands_module, "COMMAND_HANDLERS", None))
+    if not isinstance(handlers, Mapping):
+        return ()
+    handler_map = cast(Mapping[str, object], handlers)
+    return tuple(handler_map.keys())
 
 
 def get_completer() -> CommandCompleter:

@@ -1,4 +1,5 @@
-from typing import TypedDict, Sequence
+from collections.abc import Sequence
+from typing import Literal, TypedDict
 
 from .enums import TaskDifficulty
 from .models import AgentMeta, PlannerResult, SubTask, SubTaskOutput, TaskOutput
@@ -56,8 +57,8 @@ class AgentState(TypedDict):
     review_round: int
     """Current review round (0 = initial execution, 1+ = feedback loops)."""
 
-    review_decision: str | None
-    """Reviewer's last decision: 'proceed' | 're-execute' | 'add_tasks' | None."""
+    review_decision: Literal["proceed", "re-execute", "add_tasks", "repair"] | None
+    """Reviewer's last decision: 'proceed' | 're-execute' | 'add_tasks' | 'repair' | None."""
 
     re_execute_task_ids: list[int]
     """IDs of sub-tasks the reviewer wants re-executed."""

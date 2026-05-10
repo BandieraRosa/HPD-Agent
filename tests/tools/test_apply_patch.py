@@ -2675,7 +2675,16 @@ class TestToolListIntegration:
         tools_module = importlib.import_module("src.tools")
         exported_tool_list = cast(list[_NamedTool], tools_module.tool_list)
         tool_names = [tool.name for tool in exported_tool_list]
-        assert tool_names == ["read_file", "apply_patch", "terminal"]
+        assert tool_names == [
+            "read_file",
+            "apply_patch",
+            "terminal",
+            "code_search",
+            "code_outline",
+            "code_context",
+            "code_semantic",
+            "code_verify",
+        ]
         assert "write_file" not in tool_names
 
     def test_write_file_module_still_importable(self):
@@ -2691,7 +2700,16 @@ class TestToolListIntegration:
         tool_names = [tool.name for tool in tool_list]
         client_source = inspect.getsource(llm_client)
 
-        assert tool_names == ["read_file", "apply_patch", "terminal"]
+        assert tool_names == [
+            "read_file",
+            "apply_patch",
+            "terminal",
+            "code_search",
+            "code_outline",
+            "code_context",
+            "code_semantic",
+            "code_verify",
+        ]
         assert "safe_prefixes" in client_source
         assert "terminal" in client_source
         assert write_file.name == "write_file"

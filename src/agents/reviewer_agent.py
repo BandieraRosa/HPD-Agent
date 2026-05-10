@@ -39,7 +39,9 @@ async def reviewer(state: AgentState) -> AgentState:
 
         # ── Round control: max rounds → force proceed ───────────────
         if current_round >= MAX_REVIEW_ROUNDS:
-            print(f"\n[ReviewerAgent {reviewer_id}] 已达最大审查轮次 ({MAX_REVIEW_ROUNDS})，直接进入合成。")
+            print(
+                f"\n[ReviewerAgent {reviewer_id}] 已达最大审查轮次 ({MAX_REVIEW_ROUNDS})，直接进入合成。"
+            )
             return {
                 "review_decision": "proceed",
                 "re_execute_task_ids": [],
@@ -80,6 +82,13 @@ async def reviewer(state: AgentState) -> AgentState:
             decision.re_execute_ids = []
             decision.new_task_suggestions = []
 
+        from src.code_intel.workflow import patch_gate
+
+        repair_update = await patch_gate.run_repair_round(
+            state, parent_span_id=parent_span_id, max_rounds=MAX_REVIEW_ROUNDS
+        )
+        if repair_update is not None:
+            return repair_update
         re_ids = decision.re_execute_ids if review_decision == "re-execute" else []
 
         # ── Print summary ───────────────────────────────────────────
@@ -90,7 +99,9 @@ async def reviewer(state: AgentState) -> AgentState:
         if review_decision == "re-execute":
             print(f"[ReviewerAgent {reviewer_id}] 要求重做子任务: {re_ids}")
         elif review_decision == "add_tasks":
-            print(f"[ReviewerAgent {reviewer_id}] 建议新增 {len(decision.new_task_suggestions)} 个子任务")
+            print(
+                f"[ReviewerAgent {reviewer_id}] 建议新增 {len(decision.new_task_suggestions)} 个子任务"
+            )
         else:
             print(f"[ReviewerAgent {reviewer_id}] 质量合格，进入合成。")
 
@@ -110,7 +121,11 @@ async def reviewer(state: AgentState) -> AgentState:
                     "new_task_suggestions": decision.new_task_suggestions,
                     "feedback": decision.feedback,
                     "task_reviews": [
-                        {"id": tr.sub_task_id, "quality": tr.quality, "reasoning": tr.reasoning}
+                        {
+                            "id": tr.sub_task_id,
+                            "quality": tr.quality,
+                            "reasoning": tr.reasoning,
+                        }
                         for tr in decision.task_reviews
                     ],
                 },

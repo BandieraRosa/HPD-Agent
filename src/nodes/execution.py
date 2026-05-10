@@ -29,6 +29,7 @@ from src.core.models import (
     EvaluatorScore,
 )
 from src.core.observability import get_tracer, TokenTrackerCallback
+from src.code_intel.workflow import patch_gate
 from src.llm import (
     get_llm,
     invoke_with_tools,
@@ -253,6 +254,8 @@ async def _execute_single_with_tools(task_id: int, task_name: str, context: str)
         context=context, task_id=task_id, task_name=task_name
     )
     full_content, tool_log = await invoke_with_tools(prompt, tools=tool_list)
+    if tool_log:
+        _ = await patch_gate.handle_tool_log(tool_log)
     return ExecutionArtifact(detail=full_content or "", tool_log=tool_log)
 
 

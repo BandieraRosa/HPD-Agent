@@ -219,3 +219,4 @@ rich>=13.0.0
 
 - [HPD-Agent 论文](HPD-Agent.md) — 详细技术论文
 - [HPD.MD 模板](HPD.MD) — 项目知识摘要格式
+- [代码智能内核用户文档](docs/CODE_INTEL.md)，`code_intel` 完整使用说明。英文辅助版见 [docs/CODE_INTEL.en.md](docs/CODE_INTEL.en.md)。
